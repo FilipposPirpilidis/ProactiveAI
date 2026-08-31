@@ -14,10 +14,11 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
 import websockets
+import httpx
 from websockets.asyncio.client import ClientConnection
 
 
-DEFAULT_URL = "ws://127.0.0.1:8080/v1/ws"
+DEFAULT_URL = "ws://127.0.0.1:18743/v1/ws"
 
 
 @dataclass(frozen=True)
@@ -44,13 +45,41 @@ class ExpectNoInsightAction:
 FileAction = TranscriptAction | WaitAction | ExpectInsightAction | ExpectNoInsightAction
 
 
-def build_url(base_url: str, client_id: str, session_id: str, token: str | None) -> str:
+def build_url(base_url: str, client_id: str, session_id: str) -> str:
     parts = urlsplit(base_url)
     query = dict(parse_qsl(parts.query))
     query.update({"client_id": client_id, "session_id": session_id})
-    if token:
-        query["token"] = token
     return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(query), parts.fragment))
+
+
+def auth_url(websocket_url: str, action: str) -> str:
+    parts = urlsplit(websocket_url)
+    scheme = "https" if parts.scheme == "wss" else "http"
+    return urlunsplit((scheme, parts.netloc, f"/v1/auth/{action}", "", ""))
+
+
+async def sign_in(websocket_url: str, username: str, password: str, timeout: float) -> str:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            auth_url(websocket_url, "signin"),
+            json={"username": username, "password": password},
+        )
+    if response.status_code != 200:
+        raise RuntimeError(f"Sign-in failed with HTTP {response.status_code}")
+    try:
+        return str(response.json()["access_token"])
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError("Sign-in response did not contain an access token") from exc
+
+
+async def sign_out(websocket_url: str, token: str, timeout: float) -> None:
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        response = await client.post(
+            auth_url(websocket_url, "signout"),
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    if response.status_code != 200:
+        raise RuntimeError(f"Sign-out failed with HTTP {response.status_code}")
 
 
 def transcript_payload(
@@ -258,19 +287,35 @@ async def run_interactive(socket: ClientConnection, timeout: float) -> None:
 
 
 async def main_async(args: argparse.Namespace) -> None:
-    token = args.token or os.getenv("API_TOKEN") or None
-    url = build_url(args.url, args.client_id, args.session_id, token)
-    safe_url = build_url(args.url, args.client_id, args.session_id, "***" if token else None)
-    print(f"Connecting to {safe_url}")
-    async with websockets.connect(url, max_size=1_000_000) as socket:
-        if args.mode == "scenario":
-            await run_scenario(socket, args.timeout)
-        elif args.mode == "file":
-            if not args.file:
-                raise RuntimeError("File mode requires --file or SIMULATOR_TEXT_FILE")
-            await run_file(socket, Path(args.file), args.timeout, args.language)
-        else:
-            await run_interactive(socket, args.timeout)
+    token = args.token or os.getenv("ACCESS_TOKEN") or None
+    issued_token = token is None
+    if issued_token:
+        if not args.username or not args.password:
+            raise RuntimeError(
+                "Provide --username and --password, or supply an existing --token"
+            )
+        token = await sign_in(args.url, args.username, args.password, args.timeout)
+        print("Signed in and received a temporary bearer token")
+    url = build_url(args.url, args.client_id, args.session_id)
+    print(f"Connecting to {url}")
+    try:
+        async with websockets.connect(
+            url,
+            additional_headers={"Authorization": f"Bearer {token}"},
+            max_size=1_000_000,
+        ) as socket:
+            if args.mode == "scenario":
+                await run_scenario(socket, args.timeout)
+            elif args.mode == "file":
+                if not args.file:
+                    raise RuntimeError("File mode requires --file or SIMULATOR_TEXT_FILE")
+                await run_file(socket, Path(args.file), args.timeout, args.language)
+            else:
+                await run_interactive(socket, args.timeout)
+    finally:
+        if issued_token:
+            await sign_out(args.url, token, args.timeout)
+            print("Signed out and revoked the temporary bearer token")
 
 
 def parse_args() -> argparse.Namespace:
@@ -283,7 +328,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--language", default=os.getenv("SIMULATOR_LANGUAGE", "en"))
     parser.add_argument("--client-id", default="homebuddy-simulator")
     parser.add_argument("--session-id", default=f"simulation-{uuid4()}")
-    parser.add_argument("--token", help="API token; defaults to API_TOKEN")
+    parser.add_argument("--token", help="Existing access token; defaults to ACCESS_TOKEN")
+    parser.add_argument("--username", default=os.getenv("AUTH_USERNAME"))
+    parser.add_argument("--password", default=os.getenv("AUTH_PASSWORD"))
     parser.add_argument("--timeout", type=float, default=10.0)
     return parser.parse_args()
 

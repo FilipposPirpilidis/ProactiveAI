@@ -7,23 +7,32 @@ from scripts.simulator import (
     ExpectNoInsightAction,
     TranscriptAction,
     WaitAction,
+    auth_url,
     build_url,
     parse_text_file,
     transcript_payload,
 )
 
 
-def test_build_url_adds_connection_identity_and_token() -> None:
-    url = build_url("ws://api:8080/v1/ws?existing=yes", "glasses 1", "walk/2", "secret")
+def test_builds_http_auth_urls_from_websocket_url() -> None:
+    assert auth_url("ws://api:18743/v1/ws", "signin") == (
+        "http://api:18743/v1/auth/signin"
+    )
+    assert auth_url("wss://example.test/v1/ws", "signout") == (
+        "https://example.test/v1/auth/signout"
+    )
+
+
+def test_build_url_adds_connection_identity() -> None:
+    url = build_url("ws://api:18743/v1/ws?existing=yes", "glasses 1", "walk/2")
     parts = urlsplit(url)
     query = parse_qs(parts.query)
 
-    assert parts.netloc == "api:8080"
+    assert parts.netloc == "api:18743"
     assert query == {
         "existing": ["yes"],
         "client_id": ["glasses 1"],
         "session_id": ["walk/2"],
-        "token": ["secret"],
     }
 
 

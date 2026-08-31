@@ -5,11 +5,13 @@ services:
     image: homebuddy/proactive-ai:local
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "18743:18743"
     environment:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://192.168.68.112:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:cloud}
-      API_TOKEN: ${API_TOKEN:-}
+      AUTH_USERNAME: ${AUTH_USERNAME:-homebuddy}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      AUTH_TOKEN_TTL_SECONDS: ${AUTH_TOKEN_TTL_SECONDS:-86400}
       DETECTOR_MODE: ${DETECTOR_MODE:-conversate}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_PATH: /data/homebuddy.db
@@ -27,9 +29,10 @@ services:
       proactive-ai:
         condition: service_healthy
     environment:
-      SIMULATOR_WS_URL: ws://proactive-ai:8080/v1/ws
+      SIMULATOR_WS_URL: ws://proactive-ai:18743/v1/ws
       SIMULATOR_TEXT_FILE: /input/sample-transcript.txt
-      API_TOKEN: ${API_TOKEN:-}
+      AUTH_USERNAME: ${AUTH_USERNAME:-homebuddy}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
     volumes:
       - ./simulator-input:/input:ro
     command: ["python", "scripts/simulator.py", "file"]

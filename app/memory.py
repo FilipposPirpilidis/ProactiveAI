@@ -35,6 +35,12 @@ class MemoryEngine:
                 intent TEXT NOT NULL, confidence REAL NOT NULL, useful INTEGER,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS auth_tokens (
+                token_hash TEXT PRIMARY KEY, username TEXT NOT NULL,
+                created_at TEXT NOT NULL, expires_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_auth_tokens_expiry
+                ON auth_tokens(expires_at);
             """
         )
         await self._db.commit()
@@ -125,6 +131,43 @@ class MemoryEngine:
     async def record_feedback(self, insight_id: str, useful: bool) -> None:
         assert self._db
         await self._db.execute("UPDATE insights SET useful = ? WHERE id = ?", (useful, insight_id))
+        await self._db.commit()
+
+    async def store_auth_token(
+        self, token_hash: str, username: str, created_at: datetime, expires_at: datetime
+    ) -> None:
+        assert self._db
+        await self._db.execute(
+            "INSERT INTO auth_tokens(token_hash, username, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?)",
+            (token_hash, username, created_at.isoformat(), expires_at.isoformat()),
+        )
+        await self._db.commit()
+
+    async def auth_token(self, token_hash: str) -> tuple[str, datetime] | None:
+        assert self._db
+        cursor = await self._db.execute(
+            "SELECT username, expires_at FROM auth_tokens WHERE token_hash = ?",
+            (token_hash,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        return str(row["username"]), datetime.fromisoformat(str(row["expires_at"]))
+
+    async def delete_auth_token(self, token_hash: str) -> bool:
+        assert self._db
+        cursor = await self._db.execute(
+            "DELETE FROM auth_tokens WHERE token_hash = ?", (token_hash,)
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def delete_expired_auth_tokens(self, now: datetime) -> None:
+        assert self._db
+        await self._db.execute(
+            "DELETE FROM auth_tokens WHERE expires_at <= ?", (now.isoformat(),)
+        )
         await self._db.commit()
 
     @staticmethod

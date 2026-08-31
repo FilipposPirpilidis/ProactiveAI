@@ -3,8 +3,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
+from app.auth import AuthService
 from app.buffer import TranscriptBuffer
 from app.config import Settings, get_settings
 from app.detector import ProactiveDetector
@@ -22,6 +23,11 @@ class MemoryRequest(BaseModel):
     kind: str = "fact"
 
 
+class SignInRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=100)
+    password: str = Field(min_length=1, max_length=1_024)
+
+
 class ServiceContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -31,6 +37,12 @@ class ServiceContainer:
             settings.ollama_timeout_seconds,
         )
         self.memory = MemoryEngine(settings.database_path, settings.memory_result_limit)
+        self.auth = AuthService(
+            self.memory,
+            settings.auth_username,
+            settings.auth_password,
+            settings.auth_token_ttl_seconds,
+        )
         self.detector = ProactiveDetector(
             self.ollama,
             settings.detector_mode,
@@ -55,15 +67,30 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await services.ollama.close()
 
 
-app = FastAPI(title="HomeBuddy Proactive AI", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="HomeBuddy Proactive AI", version="0.2.0", lifespan=lifespan)
 
 
-def require_http_token(
-    authorization: str | None = Header(default=None),
-    settings: Settings = Depends(get_settings),
-) -> None:
-    if settings.api_token and authorization != f"Bearer {settings.api_token}":
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid API token")
+def _bearer_token(authorization: str | None) -> str:
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.casefold() != "bearer" or not token or len(token) > 200:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
+
+
+async def require_http_token(authorization: str | None = Header(default=None)) -> str:
+    token = _bearer_token(authorization)
+    services: ServiceContainer = app.state.services
+    if not await services.auth.validate(token):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return token
 
 
 @app.get("/health")
@@ -74,9 +101,38 @@ async def health() -> dict[str, str]:
 @app.get("/ready")
 async def ready() -> dict[str, str]:
     services: ServiceContainer = app.state.services
+    if not services.auth.configured:
+        raise HTTPException(status_code=503, detail="Authentication is not configured")
     if not await services.ollama.health():
         raise HTTPException(status_code=503, detail="Ollama is unavailable")
     return {"status": "ready", "model": services.settings.ollama_model}
+
+
+@app.post("/v1/auth/signin")
+async def sign_in(request: SignInRequest) -> dict[str, str | int]:
+    services: ServiceContainer = app.state.services
+    if not services.auth.configured:
+        raise HTTPException(status_code=503, detail="Authentication is not configured")
+    issued = await services.auth.sign_in(request.username, request.password)
+    if not issued:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {
+        "access_token": issued.access_token,
+        "token_type": "bearer",
+        "expires_in": services.settings.auth_token_ttl_seconds,
+        "expires_at": issued.expires_at.isoformat(),
+    }
+
+
+@app.post("/v1/auth/signout")
+async def sign_out(token: str = Depends(require_http_token)) -> dict[str, bool]:
+    services: ServiceContainer = app.state.services
+    await services.auth.sign_out(token)
+    return {"signed_out": True}
 
 
 @app.post("/v1/memories", dependencies=[Depends(require_http_token)], status_code=201)
@@ -91,11 +147,18 @@ async def websocket_endpoint(
     websocket: WebSocket,
     client_id: str = Query(min_length=1, max_length=100),
     session_id: str = Query(min_length=1, max_length=100),
-    token: str | None = Query(default=None),
+    authorization: str | None = Header(default=None),
 ) -> None:
     services: ServiceContainer = app.state.services
-    if services.settings.api_token and token != services.settings.api_token:
-        await websocket.close(code=status.WS_1008_POLICY_VIOLATION, reason="Invalid API token")
+    try:
+        token = _bearer_token(authorization)
+    except HTTPException:
+        token = ""
+    if not token or not await services.auth.validate(token):
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Invalid or expired bearer token",
+        )
         return
 
     await websocket.accept()
@@ -122,6 +185,12 @@ async def websocket_endpoint(
     try:
         while True:
             payload = await websocket.receive_json()
+            if not await services.auth.validate(token):
+                await websocket.close(
+                    code=status.WS_1008_POLICY_VIOLATION,
+                    reason="Bearer token was revoked or expired",
+                )
+                return
             message_type = payload.get("type") if isinstance(payload, dict) else None
             try:
                 if message_type == "ping":

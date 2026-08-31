@@ -16,6 +16,18 @@ It is designed for a Raspberry Pi 5 and ARM64 Docker, but also runs on Docker De
 
 The current implementation uses **SQLite, not Redis**. Runtime data persists in a Docker volume.
 
+## Authentication at a glance
+
+Authentication is required for the WebSocket and all protected HTTP endpoints:
+
+1. Sign in with `POST http://PI_ADDRESS:18743/v1/auth/signin`.
+2. Read `access_token` from the JSON response.
+3. Open `ws://PI_ADDRESS:18743/v1/ws?client_id=CLIENT_ID&session_id=SESSION_ID`.
+4. Add `Authorization: Bearer ACCESS_TOKEN` to the WebSocket HTTP upgrade request.
+5. Sign out with `POST http://PI_ADDRESS:18743/v1/auth/signout`, using the same bearer header.
+
+The WebSocket does **not** accept the token as a URL query parameter. The server validates it at connection time and before every incoming message. Expired or revoked tokens close the WebSocket with policy code `1008`.
+
 ## Architecture
 
 ```text
@@ -53,7 +65,7 @@ HomeBuddy / glasses microphone
 - Docker Engine with Docker Compose v2
 - an Ollama server reachable from the API container
 - a model already available to Ollama
-- TCP port `8080` available for this API
+- TCP port `18743` available for this API
 - TCP port `11434` reachable on the Ollama host
 
 Python is not required for Docker operation. Python 3.11+ is only needed for local development.
@@ -105,20 +117,22 @@ Edit `.env`:
 ```dotenv
 OLLAMA_BASE_URL=http://192.168.68.112:11434
 OLLAMA_MODEL=qwen3.5:cloud
-API_TOKEN=
+AUTH_USERNAME=homebuddy
+AUTH_PASSWORD=replace-with-a-long-random-secret
+AUTH_TOKEN_TTL_SECONDS=86400
 DETECTOR_MODE=conversate
 LOG_LEVEL=INFO
 ```
 
 Use the Ollama host's LAN IP even when Ollama and Docker run on the same Raspberry Pi. Ollama must accept connections from the Docker bridge network.
 
-For a trusted private-LAN test, `API_TOKEN` may remain empty. Before exposing the API to another network, generate a long random token:
+Generate a strong bootstrap password before starting the service:
 
 ```bash
 openssl rand -hex 32
 ```
 
-Put the value in `.env` without quotes.
+Put the value in `AUTH_PASSWORD` without quotes. Authentication is deliberately unavailable when the password is empty.
 
 ## 3. Start the API
 
@@ -136,7 +150,7 @@ docker compose logs -f proactive-ai
 Verify the API process:
 
 ```bash
-curl http://localhost:8080/health
+curl http://localhost:18743/health
 ```
 
 ```json
@@ -146,20 +160,20 @@ curl http://localhost:8080/health
 Verify the API and Ollama connection:
 
 ```bash
-curl http://localhost:8080/ready
+curl http://localhost:18743/ready
 ```
 
 ```json
 {"status":"ready","model":"qwen3.5:cloud"}
 ```
 
-`/health` only checks the API process. `/ready` calls Ollama's `/api/tags` and returns HTTP `503` when Ollama is unreachable.
+`/health` only checks the API process. `/ready` returns HTTP `503` when authentication is not configured or Ollama is unreachable.
 
-Generated HTTP documentation is available at `http://PI_ADDRESS:8080/docs`.
+Generated HTTP documentation is available at `http://PI_ADDRESS:18743/docs`.
 
 ## 4. Run the simulator
 
-The simulator acts like HomeBuddy forwarding Soniox results. It reads transcript actions from a text file and uses the real WebSocket API.
+The simulator acts like HomeBuddy forwarding Soniox results. It signs in with `AUTH_USERNAME` and `AUTH_PASSWORD`, uses the issued token for the WebSocket, and signs out to revoke it when the run finishes.
 
 Run the default file:
 
@@ -214,23 +228,53 @@ EXPECT_NO_INSIGHT:
 | `EXPECT_INSIGHT: phrase` | Require an insight containing `phrase` |
 | `EXPECT_NO_INSIGHT:` | Require no insight for the preceding transcript |
 
-Simulator options include `--url`, `--language`, `--client-id`, `--session-id`, `--token`, and `--timeout`.
+Simulator options include `--url`, `--language`, `--client-id`, `--session-id`, `--username`, `--password`, `--token`, and `--timeout`. `--token`/`ACCESS_TOKEN` can supply an already-issued token; the simulator does not revoke a token it did not create.
 
 ## Connect HomeBuddy
 
-Open one WebSocket per active listening session:
+### 1. Sign in
 
-```text
-ws://PI_ADDRESS:8080/v1/ws?client_id=homebuddy-01&session_id=walk-2026-08-31
+Send the configured credentials over HTTPS (or trusted-LAN HTTP):
+
+```bash
+curl -X POST http://PI_ADDRESS:18743/v1/auth/signin \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "username": "homebuddy",
+    "password": "YOUR_AUTH_PASSWORD"
+  }'
 ```
 
-With authentication enabled:
+Successful response:
 
-```text
-ws://PI_ADDRESS:8080/v1/ws?client_id=homebuddy-01&session_id=walk-2026-08-31&token=YOUR_TOKEN
+```json
+{
+  "access_token": "SERVER_GENERATED_RANDOM_TOKEN",
+  "token_type": "bearer",
+  "expires_in": 86400,
+  "expires_at": "2026-09-01T10:00:00+00:00"
+}
 ```
 
-URL-encode query values. Use `wss://` through a TLS reverse proxy outside a trusted LAN.
+Invalid credentials return HTTP `401`. Missing server credentials return HTTP `503`. Store the access token in the client's protected credential storage; never log it.
+
+Only a SHA-256 hash of the access token is stored by the server. Multiple sign-ins create independent sessions, and each token expires after `AUTH_TOKEN_TTL_SECONDS`.
+
+### 2. Open the conversation WebSocket
+
+Open one authenticated WebSocket per active listening session:
+
+```text
+ws://PI_ADDRESS:18743/v1/ws?client_id=homebuddy-01&session_id=walk-2026-08-31
+```
+
+Include this HTTP header in the WebSocket upgrade request:
+
+```text
+Authorization: Bearer YOUR_ACCESS_TOKEN
+```
+
+URL-encode query values. Use `wss://` through a TLS reverse proxy outside a trusted LAN. The token is deliberately not accepted in the URL because URLs are commonly retained in access logs.
 
 - `client_id` identifies the user/device and scopes long-term memory. Keep it stable.
 - `session_id` identifies one conversation and scopes transcript context, cooldown state, and recent insight deduplication.
@@ -352,14 +396,29 @@ Client flow:
 
 WebSocket error codes include `invalid_message`, `unsupported_type`, and `llm_unavailable`. An `llm_unavailable` event has `retryable: true`.
 
+### 3. Sign out
+
+Send the current access token as a bearer token:
+
+```bash
+curl -X POST http://PI_ADDRESS:18743/v1/auth/signout \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
+```
+
+```json
+{"signed_out":true}
+```
+
+Signout deletes the token hash from SQLite. Future HTTP/WebSocket authentication fails immediately. An already-open WebSocket checks the token before every incoming message and closes with policy code `1008` after revocation or expiry.
+
 ## Add memories
 
 Reminder/task utterances that trigger are captured automatically. A trusted service can also add memory over HTTP:
 
 ```bash
-curl -X POST http://localhost:8080/v1/memories \
+curl -X POST http://localhost:18743/v1/memories \
   -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $API_TOKEN" \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
   -d '{
     "client_id": "homebuddy-01",
     "kind": "preference",
@@ -367,7 +426,7 @@ curl -X POST http://localhost:8080/v1/memories \
   }'
 ```
 
-When `API_TOKEN` is empty, omit the authorization header. Use `client_id: "global"` only for facts that should be visible to every client. There is currently no public endpoint for listing or deleting memories.
+Authentication is required. Use `client_id: "global"` only for facts that should be visible to every client. There is currently no public endpoint for listing or deleting memories.
 
 Retrieval is lightweight: the newest 100 client/global memories are ranked using Unicode lexical overlap, and up to `MEMORY_RESULT_LIMIT` entries are supplied to the detector.
 
@@ -390,7 +449,9 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `OLLAMA_BASE_URL` | `http://192.168.68.112:11434` | Ollama HTTP endpoint |
 | `OLLAMA_MODEL` | `qwen3.5:cloud` | Exact Ollama model name |
 | `OLLAMA_TIMEOUT_SECONDS` | `45` | Model request timeout |
-| `API_TOKEN` | empty | Optional HTTP bearer/WebSocket query token |
+| `AUTH_USERNAME` | `homebuddy` | Username accepted by the signin endpoint |
+| `AUTH_PASSWORD` | empty | Bootstrap signin password; authentication is unavailable while empty |
+| `AUTH_TOKEN_TTL_SECONDS` | `86400` | Issued-token lifetime; allowed range 60 seconds–365 days |
 | `DETECTOR_MODE` | `conversate` | `conversate`, `hybrid`, or `heuristic` |
 | `DETECTOR_THRESHOLD` | `0.62` | Minimum accepted trigger confidence |
 | `INSIGHT_COOLDOWN_SECONDS` | `20` | Low-priority per-session cooldown |
@@ -400,7 +461,7 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `DATABASE_PATH` | `/data/homebuddy.db` | SQLite database path |
 | `LOG_LEVEL` | `INFO` | Python log level |
 
-Compose forwards `OLLAMA_BASE_URL`, `OLLAMA_MODEL`, `API_TOKEN`, `DETECTOR_MODE`, and `LOG_LEVEL` from `.env`, and sets `DATABASE_PATH` to the volume. Other tuning variables use their defaults. To override one in Docker, add it under `services.proactive-ai.environment` in `compose.yaml`, then recreate the service:
+Compose forwards the Ollama, authentication, detector-mode, and logging values from `.env`, and sets `DATABASE_PATH` to the volume. Other tuning variables use their defaults. To override one in Docker, add it under `services.proactive-ai.environment` in `compose.yaml`, then recreate the service:
 
 ```bash
 docker compose up -d --force-recreate proactive-ai
@@ -414,6 +475,7 @@ SQLite lives at `/data/homebuddy.db` in the `homebuddy-data` volume. It contains
 - explicit and automatically captured memories;
 - generated insights;
 - usefulness feedback.
+- hashed, expiring authentication sessions.
 
 Partial transcripts are not persisted. Final transcripts are stored before proactive filtering, including speech later classified as noise or sensitive. Do not send speech unless the user has consented to storage.
 
@@ -435,13 +497,15 @@ Do not run `docker compose down -v` unless you intentionally want to delete the 
 
 ## Security
 
-- Set `API_TOKEN` outside a trusted development LAN.
-- Put HTTPS/WSS termination in front of port `8080` before internet exposure.
+- Set a strong `AUTH_PASSWORD`; never deploy with it empty.
+- Put HTTPS/WSS termination in front of port `18743` before internet exposure.
 - Never expose Ollama port `11434` publicly.
 - Restrict firewall access to trusted clients.
 - Treat transcripts and memories as private user data.
 - Protect `.env`; it is ignored by Git.
-- Rotate tokens that appear in logs or URLs.
+- Never log credentials or issued access tokens.
+- Sign out and sign in again if an access token is exposed.
+- The signin endpoint has no rate limiter yet; restrict network access at the firewall or reverse proxy.
 
 The container runs as an unprivileged `homebuddy` user, drops Linux capabilities, enables `no-new-privileges`, and writes state only to `/data`.
 
@@ -479,7 +543,7 @@ docker compose ps
 docker compose logs --tail=200 proactive-ai
 ```
 
-Check that port `8080` is free and the persistent volume is writable.
+Check that port `18743` is free and the persistent volume is writable.
 
 ### HomeBuddy receives no cards
 
@@ -496,7 +560,7 @@ Latency is usually Ollama inference. Use a smaller local model, reduce model con
 
 ### Authentication fails
 
-HTTP writes require `Authorization: Bearer YOUR_TOKEN`. WebSocket connections use `?token=YOUR_TOKEN`. Restart the container after changing `.env`.
+Confirm `AUTH_USERNAME` and `AUTH_PASSWORD` are present in `.env`, then recreate the service. Sign in again if the token expired or was revoked. Both protected HTTP calls and WebSocket upgrade requests use `Authorization: Bearer YOUR_TOKEN`.
 
 ## Local development and tests
 
@@ -513,7 +577,9 @@ Run without Docker only for development:
 ```bash
 DATABASE_PATH=./homebuddy.db \
 OLLAMA_BASE_URL=http://192.168.68.112:11434 \
-.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8080
+AUTH_USERNAME=homebuddy \
+AUTH_PASSWORD=development-only-secret \
+.venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 18743
 ```
 
 Use Docker Compose for Raspberry Pi operation so dependencies remain reproducible.
