@@ -1,3 +1,4 @@
+import sys
 from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
 from unittest.mock import AsyncMock
@@ -13,8 +14,20 @@ from scripts.simulator import (
     auth_url,
     build_url,
     parse_text_file,
+    parse_args,
     transcript_payload,
 )
+
+
+def test_simulator_uses_same_default_credentials_as_api(monkeypatch) -> None:
+    monkeypatch.delenv("AUTH_USERNAME", raising=False)
+    monkeypatch.delenv("AUTH_PASSWORD", raising=False)
+    monkeypatch.setattr(sys, "argv", ["simulator.py", "scenario"])
+
+    args = parse_args()
+
+    assert args.username == "homebuddy"
+    assert args.password == "123456"
 
 
 def test_builds_http_auth_urls_from_websocket_url() -> None:
@@ -99,8 +112,8 @@ async def test_simulator_signs_in_and_signs_out_at_the_end(monkeypatch) -> None:
 
     args = SimpleNamespace(
         token=None,
-        username="homebuddy-test",
-        password="test-password",
+        username="homebuddy",
+        password="123456",
         url="ws://api:18743/v1/ws",
         client_id="simulator",
         session_id="auth-flow",
@@ -113,7 +126,7 @@ async def test_simulator_signs_in_and_signs_out_at_the_end(monkeypatch) -> None:
     await simulator.main_async(args)
 
     sign_in_mock.assert_awaited_once_with(
-        "ws://api:18743/v1/ws", "homebuddy-test", "test-password", 10.0
+        "ws://api:18743/v1/ws", "homebuddy", "123456", 10.0
     )
     assert connect_calls[0][1]["additional_headers"] == {
         "Authorization": "Bearer issued-test-token"

@@ -19,6 +19,8 @@ from websockets.asyncio.client import ClientConnection
 
 
 DEFAULT_URL = "ws://127.0.0.1:18743/v1/ws"
+DEFAULT_AUTH_USERNAME = "homebuddy"
+DEFAULT_AUTH_PASSWORD = "123456"
 
 
 @dataclass(frozen=True)
@@ -329,8 +331,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--client-id", default="homebuddy-simulator")
     parser.add_argument("--session-id", default=f"simulation-{uuid4()}")
     parser.add_argument("--token", help="Existing access token; defaults to ACCESS_TOKEN")
-    parser.add_argument("--username", default=os.getenv("AUTH_USERNAME"))
-    parser.add_argument("--password", default=os.getenv("AUTH_PASSWORD"))
+    parser.add_argument(
+        "--username", default=os.getenv("AUTH_USERNAME", DEFAULT_AUTH_USERNAME)
+    )
+    parser.add_argument(
+        "--password", default=os.getenv("AUTH_PASSWORD", DEFAULT_AUTH_PASSWORD)
+    )
     parser.add_argument("--timeout", type=float, default=10.0)
     return parser.parse_args()
 

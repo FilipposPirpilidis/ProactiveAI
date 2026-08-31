@@ -8,16 +8,16 @@ from app.models import Detection, Insight
 
 
 def configure_auth(monkeypatch) -> None:
-    monkeypatch.setenv("AUTH_USERNAME", "homebuddy-test")
-    monkeypatch.setenv("AUTH_PASSWORD", "correct-horse-battery-staple")
+    monkeypatch.setenv("AUTH_USERNAME", "homebuddy")
+    monkeypatch.setenv("AUTH_PASSWORD", "123456")
 
 
 def sign_in(client: TestClient) -> str:
     response = client.post(
         "/v1/auth/signin",
         json={
-            "username": "homebuddy-test",
-            "password": "correct-horse-battery-staple",
+            "username": "homebuddy",
+            "password": "123456",
         },
     )
     assert response.status_code == 200
@@ -138,7 +138,7 @@ def test_signin_protects_http_and_signout_revokes_token(tmp_path, monkeypatch) -
     with TestClient(app) as client:
         invalid = client.post(
             "/v1/auth/signin",
-            json={"username": "homebuddy-test", "password": "wrong"},
+            json={"username": "homebuddy", "password": "wrong"},
         )
         assert invalid.status_code == 401
 
@@ -187,5 +187,28 @@ def test_websocket_rejects_missing_bearer_token(tmp_path, monkeypatch) -> None:
             ):
                 pass
         assert disconnected.value.code == 1008
+
+    get_settings.cache_clear()
+
+
+def test_default_credentials_issue_token_and_signout_revokes_it(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "default-auth.db"))
+    monkeypatch.delenv("AUTH_USERNAME", raising=False)
+    monkeypatch.delenv("AUTH_PASSWORD", raising=False)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        signin = client.post(
+            "/v1/auth/signin",
+            json={"username": "homebuddy", "password": "123456"},
+        )
+        assert signin.status_code == 200
+        token = str(signin.json()["access_token"])
+        headers = {"Authorization": f"Bearer {token}"}
+
+        assert client.post("/v1/auth/signout", headers=headers).json() == {
+            "signed_out": True
+        }
+        assert client.post("/v1/auth/signout", headers=headers).status_code == 401
 
     get_settings.cache_clear()

@@ -118,7 +118,7 @@ Edit `.env`:
 OLLAMA_BASE_URL=http://192.168.68.112:11434
 OLLAMA_MODEL=qwen3.5:cloud
 AUTH_USERNAME=homebuddy
-AUTH_PASSWORD=replace-with-a-long-random-secret
+AUTH_PASSWORD=123456
 AUTH_TOKEN_TTL_SECONDS=86400
 DETECTOR_MODE=conversate
 LOG_LEVEL=INFO
@@ -126,13 +126,13 @@ LOG_LEVEL=INFO
 
 Use the Ollama host's LAN IP even when Ollama and Docker run on the same Raspberry Pi. Ollama must accept connections from the Docker bridge network.
 
-Generate a strong bootstrap password before starting the service:
+The project works immediately with `homebuddy` / `123456`. The API and simulator read the same two variables. To change the credentials, edit both values in `.env` and recreate the service. For deployment, generate a stronger password with:
 
 ```bash
 openssl rand -hex 32
 ```
 
-Put the value in `AUTH_PASSWORD` without quotes. Authentication is deliberately unavailable when the password is empty.
+Put the generated value in `AUTH_PASSWORD` without quotes.
 
 ## 3. Start the API
 
@@ -167,33 +167,30 @@ curl http://localhost:18743/ready
 {"status":"ready","model":"qwen3.5:cloud"}
 ```
 
-`/health` only checks the API process. `/ready` returns HTTP `503` when authentication is not configured or Ollama is unreachable.
+`/health` only checks the API process. `/ready` returns HTTP `503` when authentication is explicitly left unconfigured or Ollama is unreachable.
 
 Generated HTTP documentation is available at `http://PI_ADDRESS:18743/docs`.
 
 ## 4. Run the simulator
 
-The simulator acts like HomeBuddy forwarding Soniox results. It signs in, uses the issued token for the WebSocket, and signs out to revoke it when the run finishes. The committed `compose.test.yaml` supplies isolated test-only credentials to both containers, so simulator tests do not require a production `.env`.
+The simulator acts like HomeBuddy forwarding Soniox results. It uses the same credentials as the API, signs in, uses the issued token for the WebSocket, and signs out to revoke it when the run finishes. Without `.env`, both default to `homebuddy` / `123456`.
 
-Start the API with the test override:
+Start the API:
 
 ```bash
-docker compose -f compose.yaml -f compose.test.yaml \
-  --profile simulator up --build -d proactive-ai
+docker compose --profile simulator up --build -d proactive-ai
 ```
 
 Run the default file:
 
 ```bash
-docker compose -f compose.yaml -f compose.test.yaml \
-  --profile simulator run --rm simulator
+docker compose --profile simulator run --rm simulator
 ```
 
 Run the included Greek regression conversation:
 
 ```bash
-docker compose -f compose.yaml -f compose.test.yaml \
-  --profile simulator run --rm \
+docker compose --profile simulator run --rm \
   -e SIMULATOR_TEXT_FILE=/input/real-test-regression-greek.txt \
   -e SIMULATOR_LANGUAGE=el \
   simulator
@@ -202,8 +199,7 @@ docker compose -f compose.yaml -f compose.test.yaml \
 Run a custom file placed in `simulator-input/`:
 
 ```bash
-docker compose -f compose.yaml -f compose.test.yaml \
-  --profile simulator run --rm simulator \
+docker compose --profile simulator run --rm simulator \
   python scripts/simulator.py file \
   --file /input/my-conversation.txt \
   --language en
@@ -212,8 +208,7 @@ docker compose -f compose.yaml -f compose.test.yaml \
 Run the built-in protocol smoke test:
 
 ```bash
-docker compose -f compose.yaml -f compose.test.yaml \
-  --profile simulator run --rm simulator \
+docker compose --profile simulator run --rm simulator \
   python scripts/simulator.py scenario
 ```
 
@@ -241,7 +236,7 @@ EXPECT_NO_INSIGHT:
 
 Simulator options include `--url`, `--language`, `--client-id`, `--session-id`, `--username`, `--password`, `--token`, and `--timeout`. `--token`/`ACCESS_TOKEN` can supply an already-issued token; the simulator does not revoke a token it did not create.
 
-`compose.test.yaml` is for local testing only. The username defaults to `homebuddy-test` and its known password must never be used for a deployed service. Production continues to require `AUTH_PASSWORD` in `.env`.
+Changing `AUTH_USERNAME` or `AUTH_PASSWORD` in `.env` changes them for both the API and simulator.
 
 ## Connect HomeBuddy
 
@@ -463,7 +458,7 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `OLLAMA_MODEL` | `qwen3.5:cloud` | Exact Ollama model name |
 | `OLLAMA_TIMEOUT_SECONDS` | `45` | Model request timeout |
 | `AUTH_USERNAME` | `homebuddy` | Username accepted by the signin endpoint |
-| `AUTH_PASSWORD` | empty | Bootstrap signin password; authentication is unavailable while empty |
+| `AUTH_PASSWORD` | `123456` | Password accepted by the signin endpoint; change before deployment |
 | `AUTH_TOKEN_TTL_SECONDS` | `86400` | Issued-token lifetime; allowed range 60 seconds–365 days |
 | `DETECTOR_MODE` | `conversate` | `conversate`, `hybrid`, or `heuristic` |
 | `DETECTOR_THRESHOLD` | `0.62` | Minimum accepted trigger confidence |
@@ -510,7 +505,7 @@ Do not run `docker compose down -v` unless you intentionally want to delete the 
 
 ## Security
 
-- Set a strong `AUTH_PASSWORD`; never deploy with it empty.
+- Replace the default `123456` with a strong `AUTH_PASSWORD` before deployment.
 - Put HTTPS/WSS termination in front of port `18743` before internet exposure.
 - Never expose Ollama port `11434` publicly.
 - Restrict firewall access to trusted clients.
@@ -573,7 +568,7 @@ Latency is usually Ollama inference. Use a smaller local model, reduce model con
 
 ### Authentication fails
 
-Confirm `AUTH_USERNAME` and `AUTH_PASSWORD` are present in `.env`, then recreate the service. Sign in again if the token expired or was revoked. Both protected HTTP calls and WebSocket upgrade requests use `Authorization: Bearer YOUR_TOKEN`.
+The defaults are `homebuddy` / `123456`. If `.env` overrides either value, recreate both the API and simulator so they use the same pair. Sign in again if the token expired or was revoked. Both protected HTTP calls and WebSocket upgrade requests use `Authorization: Bearer YOUR_TOKEN`.
 
 ## Local development and tests
 
@@ -591,7 +586,7 @@ Run without Docker only for development:
 DATABASE_PATH=./homebuddy.db \
 OLLAMA_BASE_URL=http://192.168.68.112:11434 \
 AUTH_USERNAME=homebuddy \
-AUTH_PASSWORD=development-only-secret \
+AUTH_PASSWORD=123456 \
 .venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 18743
 ```
 

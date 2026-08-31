@@ -10,7 +10,7 @@ services:
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://192.168.68.112:11434}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:cloud}
       AUTH_USERNAME: ${AUTH_USERNAME:-homebuddy}
-      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-123456}
       AUTH_TOKEN_TTL_SECONDS: ${AUTH_TOKEN_TTL_SECONDS:-86400}
       DETECTOR_MODE: ${DETECTOR_MODE:-conversate}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -32,7 +32,7 @@ services:
       SIMULATOR_WS_URL: ws://proactive-ai:18743/v1/ws
       SIMULATOR_TEXT_FILE: /input/sample-transcript.txt
       AUTH_USERNAME: ${AUTH_USERNAME:-homebuddy}
-      AUTH_PASSWORD: ${AUTH_PASSWORD:-}
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-123456}
     volumes:
       - ./simulator-input:/input:ro
     command: ["python", "scripts/simulator.py", "file"]
