@@ -134,6 +134,116 @@ openssl rand -hex 32
 
 Put the generated value in `AUTH_PASSWORD` without quotes.
 
+## Raspberry Pi deployment notes
+
+The supplied `compose.yaml` uses Docker's normal bridge network and publishes the API as `18743:18743`. This is the recommended Raspberry Pi configuration because it preserves container network isolation.
+
+### Recommended: keep bridge networking
+
+When Ollama and ProactiveAI run on the same Pi, find the Pi's LAN address:
+
+```bash
+hostname -I
+```
+
+Reserve that address in the router/DHCP configuration when possible, then set it in `.env`:
+
+```dotenv
+OLLAMA_BASE_URL=http://192.168.68.112:11434
+```
+
+With bridge networking, `127.0.0.1` inside the container means the container itself, not the Raspberry Pi. Ollama must therefore listen beyond the host loopback interface. Check it with:
+
+```bash
+sudo ss -lntp | grep 11434
+```
+
+If it listens only on `127.0.0.1:11434`, create a systemd override:
+
+```bash
+sudo systemctl edit ollama
+```
+
+```ini
+[Service]
+Environment="OLLAMA_HOST=0.0.0.0:11434"
+```
+
+Apply it and verify the LAN endpoint:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart ollama
+curl http://192.168.68.112:11434/api/tags
+```
+
+Keep the existing Compose mapping in this mode:
+
+```yaml
+ports:
+  - "18743:18743"
+```
+
+### Alternative: use Ollama through localhost
+
+If Ollama must remain bound only to `127.0.0.1`, the containers need the Raspberry Pi's host network namespace.
+
+For `proactive-ai`, remove its `ports` block and add:
+
+```yaml
+network_mode: host
+```
+
+For `simulator`, also add:
+
+```yaml
+network_mode: host
+```
+
+Then change its WebSocket address to:
+
+```yaml
+SIMULATOR_WS_URL: ws://127.0.0.1:18743/v1/ws
+```
+
+Finally, set:
+
+```dotenv
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+```
+
+Do not configure `ports` together with `network_mode: host`. With host networking, Uvicorn binds directly to Raspberry Pi port `18743`, so Docker has no separate container port to publish. Other LAN devices still connect to `http://PI_ADDRESS:18743` and `ws://PI_ADDRESS:18743`.
+
+### Start automatically after reboot
+
+Enable the Docker daemon at boot:
+
+```bash
+sudo systemctl enable --now docker
+```
+
+The API service already has:
+
+```yaml
+restart: unless-stopped
+```
+
+Start it once after configuration:
+
+```bash
+docker compose up --build -d proactive-ai
+```
+
+Docker will then restart the container after Raspberry Pi reboots, unless it was deliberately stopped. Verify after a reboot with:
+
+```bash
+docker compose ps
+curl http://127.0.0.1:18743/health
+curl http://127.0.0.1:18743/ready
+```
+
+The SQLite database remains in the `homebuddy-data` Docker volume across container recreation and Raspberry Pi restarts.
+
 ## 3. Start the API
 
 ```bash
