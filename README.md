@@ -173,18 +173,27 @@ Generated HTTP documentation is available at `http://PI_ADDRESS:18743/docs`.
 
 ## 4. Run the simulator
 
-The simulator acts like HomeBuddy forwarding Soniox results. It signs in with `AUTH_USERNAME` and `AUTH_PASSWORD`, uses the issued token for the WebSocket, and signs out to revoke it when the run finishes.
+The simulator acts like HomeBuddy forwarding Soniox results. It signs in, uses the issued token for the WebSocket, and signs out to revoke it when the run finishes. The committed `compose.test.yaml` supplies isolated test-only credentials to both containers, so simulator tests do not require a production `.env`.
+
+Start the API with the test override:
+
+```bash
+docker compose -f compose.yaml -f compose.test.yaml \
+  --profile simulator up --build -d proactive-ai
+```
 
 Run the default file:
 
 ```bash
-docker compose --profile simulator run --rm simulator
+docker compose -f compose.yaml -f compose.test.yaml \
+  --profile simulator run --rm simulator
 ```
 
 Run the included Greek regression conversation:
 
 ```bash
-docker compose --profile simulator run --rm \
+docker compose -f compose.yaml -f compose.test.yaml \
+  --profile simulator run --rm \
   -e SIMULATOR_TEXT_FILE=/input/real-test-regression-greek.txt \
   -e SIMULATOR_LANGUAGE=el \
   simulator
@@ -193,7 +202,8 @@ docker compose --profile simulator run --rm \
 Run a custom file placed in `simulator-input/`:
 
 ```bash
-docker compose --profile simulator run --rm simulator \
+docker compose -f compose.yaml -f compose.test.yaml \
+  --profile simulator run --rm simulator \
   python scripts/simulator.py file \
   --file /input/my-conversation.txt \
   --language en
@@ -202,7 +212,8 @@ docker compose --profile simulator run --rm simulator \
 Run the built-in protocol smoke test:
 
 ```bash
-docker compose --profile simulator run --rm simulator \
+docker compose -f compose.yaml -f compose.test.yaml \
+  --profile simulator run --rm simulator \
   python scripts/simulator.py scenario
 ```
 
@@ -229,6 +240,8 @@ EXPECT_NO_INSIGHT:
 | `EXPECT_NO_INSIGHT:` | Require no insight for the preceding transcript |
 
 Simulator options include `--url`, `--language`, `--client-id`, `--session-id`, `--username`, `--password`, `--token`, and `--timeout`. `--token`/`ACCESS_TOKEN` can supply an already-issued token; the simulator does not revoke a token it did not create.
+
+`compose.test.yaml` is for local testing only. The username defaults to `homebuddy-test` and its known password must never be used for a deployed service. Production continues to require `AUTH_PASSWORD` in `.env`.
 
 ## Connect HomeBuddy
 

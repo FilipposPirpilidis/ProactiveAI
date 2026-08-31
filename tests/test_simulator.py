@@ -1,6 +1,9 @@
+from types import SimpleNamespace
 from urllib.parse import parse_qs, urlsplit
+from unittest.mock import AsyncMock
 
 import pytest
+import scripts.simulator as simulator
 
 from scripts.simulator import (
     ExpectInsightAction,
@@ -69,3 +72,53 @@ def test_parse_text_file_rejects_invalid_wait(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="Invalid WAIT"):
         parse_text_file(path)
+
+
+async def test_simulator_signs_in_and_signs_out_at_the_end(monkeypatch) -> None:
+    sign_in_mock = AsyncMock(return_value="issued-test-token")
+    sign_out_mock = AsyncMock()
+    scenario_mock = AsyncMock()
+
+    class Connection:
+        async def __aenter__(self) -> object:
+            return object()
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    connect_calls: list[tuple[str, dict[str, object]]] = []
+
+    def connect(url: str, **kwargs: object) -> Connection:
+        connect_calls.append((url, kwargs))
+        return Connection()
+
+    monkeypatch.setattr(simulator, "sign_in", sign_in_mock)
+    monkeypatch.setattr(simulator, "sign_out", sign_out_mock)
+    monkeypatch.setattr(simulator, "run_scenario", scenario_mock)
+    monkeypatch.setattr(simulator.websockets, "connect", connect)
+
+    args = SimpleNamespace(
+        token=None,
+        username="homebuddy-test",
+        password="test-password",
+        url="ws://api:18743/v1/ws",
+        client_id="simulator",
+        session_id="auth-flow",
+        timeout=10.0,
+        mode="scenario",
+        file=None,
+        language="en",
+    )
+
+    await simulator.main_async(args)
+
+    sign_in_mock.assert_awaited_once_with(
+        "ws://api:18743/v1/ws", "homebuddy-test", "test-password", 10.0
+    )
+    assert connect_calls[0][1]["additional_headers"] == {
+        "Authorization": "Bearer issued-test-token"
+    }
+    scenario_mock.assert_awaited_once()
+    sign_out_mock.assert_awaited_once_with(
+        "ws://api:18743/v1/ws", "issued-test-token", 10.0
+    )
