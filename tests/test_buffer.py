@@ -1,7 +1,11 @@
 from datetime import datetime, timedelta, timezone
 
-from app.buffer import TranscriptBuffer
+from app.buffer import PartialTranscriptAssembler, TranscriptBuffer
 from app.models import TranscriptMessage
+
+
+def transcript(event_id: str, text: str, *, final: bool = False) -> TranscriptMessage:
+    return TranscriptMessage(event_id=event_id, text=text, is_final=final)
 
 
 def test_buffer_keeps_final_transcripts_only() -> None:
@@ -24,3 +28,38 @@ def test_buffer_prunes_old_transcripts() -> None:
 
     assert len(buffer) == 0
 
+
+def test_partial_assembler_reconstructs_a_sliding_stt_window() -> None:
+    assembler = PartialTranscriptAssembler()
+    event_id = "soniox-long-utterance"
+
+    assembler.update(transcript(event_id, "Speaker 1: This is the beginning of a long thought"))
+    assembled = assembler.update(
+        transcript(event_id, "the beginning of a long thought that continues after the cap")
+    )
+    final = assembler.finalize(
+        transcript(
+            event_id,
+            "long thought that continues after the cap and now it is final.",
+            final=True,
+        )
+    )
+
+    assert assembled.text == (
+        "Speaker 1: This is the beginning of a long thought that continues after the cap"
+    )
+    assert final.text == (
+        "Speaker 1: This is the beginning of a long thought that continues after the cap "
+        "and now it is final."
+    )
+
+
+def test_partial_assembler_uses_latest_cumulative_stt_correction() -> None:
+    assembler = PartialTranscriptAssembler()
+
+    assembler.update(transcript("corrected", "Speaker 2: The capital is Sid"))
+    corrected = assembler.update(
+        transcript("corrected", "Speaker 2: The capital is Sydney")
+    )
+
+    assert corrected.text == "Speaker 2: The capital is Sydney"

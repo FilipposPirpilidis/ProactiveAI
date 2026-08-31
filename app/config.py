@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     detector_mode: str = Field(default="conversate", pattern="^(heuristic|hybrid|conversate)$")
     detector_threshold: float = 0.62
     insight_cooldown_seconds: int = 20
+    partial_insight_debounce_ms: int = Field(default=400, ge=0, le=5_000)
+    partial_insight_interval_ms: int = Field(default=2_000, ge=100, le=60_000)
     memory_result_limit: int = 5
 
 

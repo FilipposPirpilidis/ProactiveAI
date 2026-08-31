@@ -13,6 +13,7 @@ from scripts.simulator import (
     WaitAction,
     auth_url,
     build_url,
+    expect,
     parse_text_file,
     parse_args,
     transcript_payload,
@@ -59,6 +60,26 @@ def test_transcript_payload_has_soniox_shape() -> None:
     assert payload["text"] == "Testing partial speech"
     assert payload["is_final"] is False
     assert str(payload["event_id"]).startswith("sim-")
+
+
+async def test_expect_allows_async_partial_insight_before_ack() -> None:
+    class Socket:
+        def __init__(self) -> None:
+            self.messages = iter(
+                [
+                    '{"type":"insight","source":"partial","event_id":"p-1"}',
+                    '{"type":"ack","event_id":"f-1","processed":true}',
+                ]
+            )
+
+        async def recv(self) -> str:
+            return next(self.messages)
+
+    observed: list[dict[str, object]] = []
+    acknowledgement = await expect(Socket(), "ack", 1.0, observed)  # type: ignore[arg-type]
+
+    assert acknowledgement["event_id"] == "f-1"
+    assert observed[0]["event_id"] == "p-1"
 
 
 def test_parse_text_file_supports_transcripts_partials_and_waits(tmp_path) -> None:

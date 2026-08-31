@@ -32,10 +32,43 @@ class QuestionOllama:
         )
 
 
+class TechnicalTermOllama:
+    def __init__(self) -> None:
+        self.last_prompt = ""
+
+    async def chat(self, *args: object, **kwargs: object) -> str:
+        messages = args[0]
+        self.last_prompt = messages[0]["content"]  # type: ignore[index]
+        return (
+            '{"should_trigger":true,"confidence":0.91,"reason":"new technical acronym",'
+            '"intent":"definition","insight":"RLHF — Reinforcement Learning from Human '
+            'Feedback; it tunes a model using human preferences."}'
+        )
+
+
 async def test_strong_question_triggers() -> None:
     detector = ProactiveDetector(UnusedOllama(), mode="heuristic", cooldown_seconds=0)  # type: ignore[arg-type]
 
     result = await detector.detect("session-1", "What should I bring to the appointment tomorrow?")
+
+    assert result.should_trigger is True
+    assert result.intent == "question"
+
+
+async def test_explicit_question_is_high_priority_in_heuristic_mode() -> None:
+    detector = ProactiveDetector(UnusedOllama(), mode="heuristic")  # type: ignore[arg-type]
+
+    result = await detector.detect("session-1", "Why is the sky blue?")
+
+    assert result.should_trigger is True
+    assert result.intent == "question"
+    assert result.reason == "strong_local_signal"
+
+
+async def test_spoken_question_without_punctuation_is_detected() -> None:
+    detector = ProactiveDetector(UnusedOllama(), mode="heuristic")  # type: ignore[arg-type]
+
+    result = await detector.detect("session-1", "Can you explain how transformers work")
 
     assert result.should_trigger is True
     assert result.intent == "question"
@@ -87,6 +120,38 @@ async def test_conversate_mode_can_trigger_on_a_statement() -> None:
     assert "I think Sydney is the capital of Australia." in ollama.last_prompt
 
 
+async def test_detection_can_defer_cooldown_commit_for_a_partial() -> None:
+    ollama = ConversateOllama()
+    detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=30)  # type: ignore[arg-type]
+    text = "I think Sydney is the capital of Australia."
+
+    partial = await detector.detect_conversation(
+        "session-1", text, text, record_trigger=False
+    )
+    final = await detector.detect_conversation("session-1", text, text)
+
+    assert partial.should_trigger is True
+    assert final.should_trigger is True
+
+
+async def test_conversate_explains_a_short_technical_acronym_without_a_question() -> None:
+    ollama = TechnicalTermOllama()
+    detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=0)  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        "Speaker 1: We use RLHF.",
+        "Speaker 1: We use RLHF.",
+        language="en",
+    )
+
+    assert result.should_trigger is True
+    assert result.intent == "definition"
+    assert result.insight is not None and result.insight.startswith("RLHF")
+    assert "proactively trigger" in ollama.last_prompt
+    assert "required output language is English" in ollama.last_prompt
+
+
 async def test_last_displayed_insight_is_included_to_prevent_stale_repeats() -> None:
     ollama = ConversateOllama()
     detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=0)  # type: ignore[arg-type]
@@ -112,7 +177,7 @@ async def test_hybrid_mode_stays_silent_on_an_unprompted_statement() -> None:
     assert result.should_trigger is False
 
 
-async def test_question_in_any_language_passes_through_attention_gate() -> None:
+async def test_explicit_question_in_any_language_triggers_deterministically() -> None:
     ollama = QuestionOllama()
     detector = ProactiveDetector(ollama, mode="conversate")  # type: ignore[arg-type]
 
@@ -125,8 +190,8 @@ async def test_question_in_any_language_passes_through_attention_gate() -> None:
 
     assert result.should_trigger is True
     assert result.intent == "question"
-    assert result.reason == "objective question"
-    assert ollama.called
+    assert result.reason == "strong_local_signal"
+    assert not ollama.called
 
 
 async def test_distinct_question_bypasses_active_cooldown() -> None:

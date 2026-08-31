@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -6,7 +7,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, W
 from pydantic import BaseModel, Field, ValidationError
 
 from app.auth import AuthService
-from app.buffer import TranscriptBuffer
+from app.buffer import PartialTranscriptAssembler, TranscriptBuffer
 from app.config import Settings, get_settings
 from app.detector import ProactiveDetector
 from app.insights import InsightEngine, captured_insight_text, sanitize_insight_text
@@ -68,6 +69,221 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="HomeBuddy Proactive AI", version="0.2.0", lifespan=lifespan)
+
+
+class PartialInsightWorker:
+    """Evaluate only the newest partial without blocking the WebSocket receive loop."""
+
+    def __init__(
+        self,
+        websocket: WebSocket,
+        send_lock: asyncio.Lock,
+        services: ServiceContainer,
+        buffer: TranscriptBuffer,
+        client_id: str,
+        session_id: str,
+        inference_lock: asyncio.Lock,
+    ) -> None:
+        self.websocket = websocket
+        self.send_lock = send_lock
+        self.services = services
+        self.buffer = buffer
+        self.client_id = client_id
+        self.session_id = session_id
+        self.inference_lock = inference_lock
+        self._revision = 0
+        self._latest: tuple[int, TranscriptMessage] | None = None
+        self._task: asyncio.Task[None] | None = None
+
+    def submit(self, transcript: TranscriptMessage) -> None:
+        self._revision += 1
+        self._latest = (self._revision, transcript)
+        if not self._task or self._task.done():
+            self._task = asyncio.create_task(self._run())
+
+    def cancel_pending(self) -> None:
+        self._revision += 1
+        self._latest = None
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = None
+
+    async def close(self) -> None:
+        task = self._task
+        self.cancel_pending()
+        if task:
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _run(self) -> None:
+        try:
+            while self._latest:
+                # This is a leading debounce: continuous STT updates cannot postpone
+                # evaluation forever. The newest snapshot is selected after the delay.
+                await asyncio.sleep(
+                    self.services.settings.partial_insight_debounce_ms / 1_000
+                )
+                latest = self._latest
+                if not latest:
+                    return
+                revision, transcript = latest
+                started_at = asyncio.get_running_loop().time()
+                async with self.inference_lock:
+                    await self._evaluate(revision, transcript)
+
+                current = self._latest
+                if not current or current[0] == revision:
+                    return
+                elapsed = asyncio.get_running_loop().time() - started_at
+                interval = self.services.settings.partial_insight_interval_ms / 1_000
+                if elapsed < interval:
+                    await asyncio.sleep(interval - elapsed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Partial insight worker failed session=%s", self.session_id)
+
+    async def _evaluate(self, revision: int, transcript: TranscriptMessage) -> None:
+        try:
+            conversation = " ".join(
+                part for part in (self.buffer.latest_text(5), transcript.text) if part
+            )
+            memories = await self.services.memory.relevant(self.client_id, conversation)
+            memory_context = "\n".join(f"- {item.content}" for item in memories)
+            detection = await self.services.detector.detect_conversation(
+                self.session_id,
+                conversation,
+                transcript.text,
+                memory_context,
+                transcript.language,
+                record_trigger=False,
+            )
+            logger.info(
+                "Partial evaluated session=%s event=%s revision=%d triggered=%s reason=%s",
+                self.session_id,
+                transcript.event_id,
+                revision,
+                detection.should_trigger,
+                detection.reason,
+            )
+            if not detection.should_trigger:
+                return
+
+            # Incomplete commands must not create reminders/tasks. Their final form will.
+            if detection.intent in {"reminder", "task"}:
+                return
+
+            if detection.insight:
+                insight = Insight(
+                    session_id=self.session_id,
+                    text=detection.insight,
+                    intent=detection.intent,
+                    confidence=detection.confidence,
+                )
+            else:
+                insight = await self.services.insights.generate(
+                    self.session_id,
+                    conversation,
+                    detection,
+                    memories,
+                    transcript.text,
+                    transcript.language,
+                )
+
+            insight.text = sanitize_insight_text(insight.text, transcript.language)
+            current = self._latest
+            if (
+                not current
+                or current[0] < revision
+                or not self._compatible(transcript, current[1])
+                or self.services.detector.is_repeated_insight(self.session_id, insight.text)
+            ):
+                return
+
+            await self.services.memory.store_insight(insight)
+            current = self._latest
+            if not current or not self._compatible(transcript, current[1]):
+                return
+            self.services.detector.record_trigger(self.session_id, transcript.text)
+            self.services.detector.record_insight(self.session_id, insight.text)
+            logger.info(
+                "Partial insight emitted session=%s event=%s insight=%s",
+                self.session_id,
+                transcript.event_id,
+                insight.id,
+            )
+            await _send_json(
+                self.websocket,
+                self.send_lock,
+                _insight_payload(insight, event_id=transcript.event_id, source="partial"),
+            )
+        except asyncio.CancelledError:
+            raise
+        except OllamaError:
+            logger.debug("Partial insight generation unavailable session=%s", self.session_id)
+
+    @staticmethod
+    def _compatible(older: TranscriptMessage, newer: TranscriptMessage) -> bool:
+        if older.event_id != newer.event_id:
+            return False
+        old_words = set(older.text.casefold().split())
+        new_words = set(newer.text.casefold().split())
+        overlap = len(old_words & new_words) / max(1, min(len(old_words), len(new_words)))
+        return older.text.casefold() in newer.text.casefold() or overlap >= 0.75
+
+
+class FinalTranscriptWorker:
+    """Process final transcripts in order while the receive loop remains responsive."""
+
+    def __init__(
+        self,
+        websocket: WebSocket,
+        send_lock: asyncio.Lock,
+        inference_lock: asyncio.Lock,
+        services: ServiceContainer,
+        client_id: str,
+        session_id: str,
+    ) -> None:
+        self.websocket = websocket
+        self.send_lock = send_lock
+        self.inference_lock = inference_lock
+        self.services = services
+        self.client_id = client_id
+        self.session_id = session_id
+        self._queue: asyncio.Queue[tuple[TranscriptMessage, str]] = asyncio.Queue()
+        self._task = asyncio.create_task(self._run())
+
+    def submit(self, transcript: TranscriptMessage, conversation: str) -> None:
+        self._queue.put_nowait((transcript, conversation))
+
+    async def close(self) -> None:
+        self._task.cancel()
+        await asyncio.gather(self._task, return_exceptions=True)
+
+    async def _run(self) -> None:
+        try:
+            while True:
+                transcript, conversation = await self._queue.get()
+                try:
+                    async with self.inference_lock:
+                        await _process_final_transcript(
+                            self.websocket,
+                            self.send_lock,
+                            self.services,
+                            self.client_id,
+                            self.session_id,
+                            transcript,
+                            conversation,
+                        )
+                except Exception:
+                    logger.exception(
+                        "Final transcript worker failed event=%s session=%s",
+                        transcript.event_id,
+                        self.session_id,
+                    )
+                finally:
+                    self._queue.task_done()
+        except asyncio.CancelledError:
+            raise
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -162,24 +378,36 @@ async def websocket_endpoint(
         return
 
     await websocket.accept()
+    send_lock = asyncio.Lock()
+    inference_lock = asyncio.Lock()
     buffer = TranscriptBuffer(
         services.settings.transcript_max_items,
         services.settings.transcript_window_seconds,
     )
+    partial_assembler = PartialTranscriptAssembler()
     for prior in await services.memory.recent_transcripts(
         session_id, services.settings.transcript_max_items
     ):
         buffer.add(prior)
     for previous_insight in await services.memory.recent_insight_texts(session_id):
         services.detector.record_insight(session_id, previous_insight)
-    await websocket.send_json(
+    await _send_json(websocket, send_lock,
         {
             "type": "ready",
             "client_id": client_id,
             "session_id": session_id,
             "model": services.settings.ollama_model,
             "detector_mode": services.settings.detector_mode,
+            "partial_insights": services.settings.detector_mode == "conversate",
+            "partial_insight_debounce_ms": services.settings.partial_insight_debounce_ms,
+            "partial_insight_interval_ms": services.settings.partial_insight_interval_ms,
         }
+    )
+    partial_worker = PartialInsightWorker(
+        websocket, send_lock, services, buffer, client_id, session_id, inference_lock
+    )
+    final_worker = FinalTranscriptWorker(
+        websocket, send_lock, inference_lock, services, client_id, session_id
     )
 
     try:
@@ -195,53 +423,89 @@ async def websocket_endpoint(
             try:
                 if message_type == "ping":
                     PingMessage.model_validate(payload)
-                    await websocket.send_json({"type": "pong"})
+                    await _send_json(websocket, send_lock, {"type": "pong"})
                 elif message_type == "feedback":
                     feedback = FeedbackMessage.model_validate(payload)
                     await services.memory.record_feedback(feedback.insight_id, feedback.useful)
-                    await websocket.send_json({"type": "feedback_saved", "insight_id": feedback.insight_id})
+                    await _send_json(
+                        websocket, send_lock,
+                        {"type": "feedback_saved", "insight_id": feedback.insight_id},
+                    )
                 elif message_type == "transcript":
                     transcript = TranscriptMessage.model_validate(payload)
                     await _handle_transcript(
-                        websocket, services, buffer, client_id, session_id, transcript
+                        websocket, send_lock, partial_worker, final_worker, services,
+                        buffer, partial_assembler, client_id, session_id, transcript
                     )
                 else:
-                    await websocket.send_json({"type": "error", "code": "unsupported_type"})
+                    await _send_json(
+                        websocket, send_lock, {"type": "error", "code": "unsupported_type"}
+                    )
             except ValidationError as exc:
-                await websocket.send_json(
+                await _send_json(websocket, send_lock,
                     {"type": "error", "code": "invalid_message", "detail": exc.errors(include_url=False)}
                 )
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected client=%s session=%s", client_id, session_id)
+    finally:
+        await partial_worker.close()
+        await final_worker.close()
 
 
 async def _handle_transcript(
     websocket: WebSocket,
+    send_lock: asyncio.Lock,
+    partial_worker: PartialInsightWorker,
+    final_worker: FinalTranscriptWorker,
     services: ServiceContainer,
     buffer: TranscriptBuffer,
+    partial_assembler: PartialTranscriptAssembler,
     client_id: str,
     session_id: str,
     transcript: TranscriptMessage,
 ) -> None:
     if not transcript.is_final:
-        await websocket.send_json(
-            {"type": "ack", "event_id": transcript.event_id, "processed": False, "reason": "partial"}
+        await _send_json(websocket, send_lock,
+            {
+                "type": "ack",
+                "event_id": transcript.event_id,
+                "processed": False,
+                "reason": "partial",
+                "evaluation_queued": services.settings.detector_mode == "conversate",
+                "insight_may_follow": services.settings.detector_mode == "conversate",
+            }
         )
+        if services.settings.detector_mode == "conversate":
+            partial_worker.submit(partial_assembler.update(transcript))
         return
 
+    partial_worker.cancel_pending()
+    transcript = partial_assembler.finalize(transcript)
     buffer.add(transcript)
+    final_worker.submit(transcript, buffer.latest_text(6))
+
+
+async def _process_final_transcript(
+    websocket: WebSocket,
+    send_lock: asyncio.Lock,
+    services: ServiceContainer,
+    client_id: str,
+    session_id: str,
+    transcript: TranscriptMessage,
+    conversation: str,
+) -> None:
     await services.memory.store_transcript(session_id, transcript)
-    memories = await services.memory.relevant(client_id, buffer.latest_text(6))
+    memories = await services.memory.relevant(client_id, conversation)
     memory_context = "\n".join(f"- {item.content}" for item in memories)
     detection = await services.detector.detect_conversation(
         session_id,
-        buffer.latest_text(6),
+        conversation,
         transcript.text,
         memory_context,
         transcript.language,
     )
     if not detection.should_trigger:
-        await _send_ack(websocket, transcript.event_id, False, detection.reason)
+        await _send_ack(websocket, send_lock, transcript.event_id, False, detection.reason)
         return
 
     if detection.intent in {"reminder", "task"}:
@@ -264,41 +528,65 @@ async def _handle_transcript(
     else:
         try:
             insight = await services.insights.generate(
-                session_id, buffer.text(), detection, memories, transcript.text
+                session_id,
+                conversation,
+                detection,
+                memories,
+                transcript.text,
+                transcript.language,
             )
         except OllamaError:
-            await _send_ack(websocket, transcript.event_id, True, detection.reason)
-            await websocket.send_json({"type": "error", "code": "llm_unavailable", "retryable": True})
+            await _send_ack(websocket, send_lock, transcript.event_id, True, detection.reason)
+            await _send_json(
+                websocket, send_lock,
+                {"type": "error", "code": "llm_unavailable", "retryable": True},
+            )
             return
 
     insight.text = sanitize_insight_text(insight.text, transcript.language)
 
     if services.detector.is_repeated_insight(session_id, insight.text):
-        await _send_ack(websocket, transcript.event_id, False, "repeated_insight")
+        await _send_ack(websocket, send_lock, transcript.event_id, False, "repeated_insight")
         return
 
-    await _send_ack(websocket, transcript.event_id, True, detection.reason)
+    await _send_ack(websocket, send_lock, transcript.event_id, True, detection.reason)
     await services.memory.store_insight(insight)
     services.detector.record_insight(session_id, insight.text)
-    await websocket.send_json(
-        {
-            "type": "insight",
-            "insight_id": insight.id,
-            "text": insight.text,
-            "intent": insight.intent,
-            "confidence": insight.confidence,
-            "created_at": insight.created_at.isoformat(),
-        }
-    )
+    await _send_json(websocket, send_lock, _insight_payload(insight))
+
+
+def _insight_payload(
+    insight: Insight, *, event_id: str | None = None, source: str = "final"
+) -> dict[str, str | float]:
+    payload: dict[str, str | float] = {
+        "type": "insight",
+        "insight_id": insight.id,
+        "text": insight.text,
+        "intent": insight.intent,
+        "confidence": insight.confidence,
+        "created_at": insight.created_at.isoformat(),
+        "source": source,
+    }
+    if event_id:
+        payload["event_id"] = event_id
+    return payload
+
+
+async def _send_json(
+    websocket: WebSocket, send_lock: asyncio.Lock, payload: dict[str, object]
+) -> None:
+    async with send_lock:
+        await websocket.send_json(payload)
 
 
 async def _send_ack(
     websocket: WebSocket,
+    send_lock: asyncio.Lock,
     event_id: str,
     triggered: bool,
     reason: str,
 ) -> None:
-    await websocket.send_json(
+    await _send_json(websocket, send_lock,
         {
             "type": "ack",
             "event_id": event_id,

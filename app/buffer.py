@@ -33,3 +33,46 @@ class TranscriptBuffer:
         self._prune()
         return len(self._items)
 
+
+class PartialTranscriptAssembler:
+    """Reconstruct STT utterances whose cumulative partial text becomes a sliding tail."""
+
+    def __init__(self, max_characters: int = 8_000) -> None:
+        self.max_characters = max_characters
+        self._texts: dict[str, str] = {}
+
+    def update(self, message: TranscriptMessage) -> TranscriptMessage:
+        previous = self._texts.get(message.event_id, "")
+        merged = self._merge(previous, message.text)[-self.max_characters :]
+        self._texts[message.event_id] = merged
+        return message.model_copy(update={"text": merged})
+
+    def finalize(self, message: TranscriptMessage) -> TranscriptMessage:
+        assembled = self.update(message)
+        self._texts.pop(message.event_id, None)
+        return assembled
+
+    @staticmethod
+    def _merge(previous: str, current: str) -> str:
+        if not previous or current.startswith(previous):
+            return current
+        if previous == current or previous.endswith(current):
+            return previous
+
+        # A capped Soniox partial drops characters from the left. Find the exact
+        # previous-suffix/current-prefix overlap and append only genuinely new text.
+        maximum = min(len(previous), len(current))
+        for overlap in range(maximum, 11, -1):
+            if previous.endswith(current[:overlap]):
+                return previous + current[overlap:]
+
+        # Normal STT revisions can rewrite the latest word. Prefer the corrected
+        # cumulative version instead of accidentally concatenating two alternatives.
+        shared_prefix = 0
+        for left, right in zip(previous, current):
+            if left != right:
+                break
+            shared_prefix += 1
+        if shared_prefix >= min(len(previous), len(current)) // 2:
+            return current
+        return current

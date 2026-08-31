@@ -1,0 +1,4 @@
+# A genuine question should produce a direct answer from a partial transcript.
+PARTIAL: Speaker 1: Why does the sky look blue?
+WAIT: 5
+EXPECT_INSIGHT:

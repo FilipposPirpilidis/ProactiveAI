@@ -1,3 +1,6 @@
+import asyncio
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
@@ -56,6 +59,31 @@ class ForbiddenInsightEngine:
         raise AssertionError("combined detection must not make a second model call")
 
 
+class SlowPartialDetector:
+    def __init__(self) -> None:
+        self.triggers: list[tuple[str, str]] = []
+        self.insights: list[tuple[str, str]] = []
+
+    def record_trigger(self, session_id: str, text: str) -> None:
+        self.triggers.append((session_id, text))
+
+    def record_insight(self, session_id: str, text: str) -> None:
+        self.insights.append((session_id, text))
+
+    def is_repeated_insight(self, session_id: str, text: str) -> bool:
+        return False
+
+    async def detect_conversation(self, *args: object, **kwargs: object) -> Detection:
+        await asyncio.sleep(0.05)
+        return Detection(
+            should_trigger=True,
+            confidence=0.95,
+            reason="partial factual correction",
+            intent="fact_check",
+            insight="Correction: Canberra is the capital of Australia.",
+        )
+
+
 def test_websocket_transcript_to_insight(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.db"))
     monkeypatch.setenv("DETECTOR_MODE", "heuristic")
@@ -103,6 +131,141 @@ def test_combined_detection_reuses_generated_insight(tmp_path, monkeypatch) -> N
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "combined.db"))
     monkeypatch.setenv("DETECTOR_MODE", "conversate")
     configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+
+def test_conversate_partial_ack_does_not_block_stream_and_can_emit_insight(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "partial.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "conversate")
+    monkeypatch.setenv("PARTIAL_INSIGHT_DEBOUNCE_MS", "0")
+    configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        token = sign_in(client)
+        detector = SlowPartialDetector()
+        app.state.services.detector = detector
+        app.state.services.insights = ForbiddenInsightEngine()
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=chat-partial",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as socket:
+            assert socket.receive_json()["type"] == "ready"
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "partial-1",
+                    "text": "I think Sydney is the capital of Australia.",
+                    "is_final": False,
+                }
+            )
+            socket.send_json({"type": "ping"})
+
+            assert socket.receive_json() == {
+                "type": "ack",
+                "event_id": "partial-1",
+                "processed": False,
+                "reason": "partial",
+                "evaluation_queued": True,
+                "insight_may_follow": True,
+            }
+            assert socket.receive_json() == {"type": "pong"}
+            insight = socket.receive_json()
+            assert insight["type"] == "insight"
+            assert insight["event_id"] == "partial-1"
+            assert insight["source"] == "partial"
+            assert insight["text"].startswith("Correction: Canberra")
+            assert detector.triggers == [
+                ("chat-partial", "I think Sydney is the capital of Australia.")
+            ]
+
+    get_settings.cache_clear()
+
+
+def test_continuous_partial_updates_do_not_starve_evaluation(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "continuous-partials.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "conversate")
+    monkeypatch.setenv("PARTIAL_INSIGHT_DEBOUNCE_MS", "10")
+    monkeypatch.setenv("PARTIAL_INSIGHT_INTERVAL_MS", "1000")
+    configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        token = sign_in(client)
+        detector = SlowPartialDetector()
+        app.state.services.detector = detector
+        app.state.services.insights = ForbiddenInsightEngine()
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=continuous-partials",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as socket:
+            assert socket.receive_json()["partial_insights"] is True
+            for index in range(12):
+                socket.send_json(
+                    {
+                        "type": "transcript",
+                        "event_id": "streaming-event",
+                        "text": (
+                            "I think Sydney is the capital of Australia "
+                            + " ".join(f"word-{number}" for number in range(index + 1))
+                        ),
+                        "is_final": False,
+                    }
+                )
+                time.sleep(0.02)
+
+            messages = [socket.receive_json() for _ in range(13)]
+            insights = [message for message in messages if message["type"] == "insight"]
+            acknowledgements = [message for message in messages if message["type"] == "ack"]
+
+            assert len(acknowledgements) == 12
+            assert len(insights) == 1
+            assert insights[0]["source"] == "partial"
+            assert insights[0]["event_id"] == "streaming-event"
+
+    get_settings.cache_clear()
+
+
+def test_slow_final_evaluation_does_not_delay_new_partial_ack(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "nonblocking-final.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "conversate")
+    monkeypatch.setenv("PARTIAL_INSIGHT_DEBOUNCE_MS", "0")
+    configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        token = sign_in(client)
+        app.state.services.detector = SlowPartialDetector()
+        app.state.services.insights = ForbiddenInsightEngine()
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=nonblocking-final",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as socket:
+            socket.receive_json()
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "slow-final",
+                    "text": "I think Sydney is the capital of Australia.",
+                    "is_final": True,
+                }
+            )
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "next-partial",
+                    "text": "The conversation is already continuing with another thought",
+                    "is_final": False,
+                }
+            )
+
+            first_response = socket.receive_json()
+            assert first_response["type"] == "ack"
+            assert first_response["event_id"] == "next-partial"
+            assert first_response["reason"] == "partial"
+
     get_settings.cache_clear()
 
     with TestClient(app) as client:

@@ -114,12 +114,28 @@ async def send_json(socket: ClientConnection, payload: dict[str, object]) -> Non
     await socket.send(json.dumps(payload))
 
 
-async def expect(socket: ClientConnection, expected_type: str, timeout: float) -> dict[str, object]:
-    message = await receive_json(socket, timeout)
-    actual_type = message.get("type")
-    if actual_type != expected_type:
+async def expect(
+    socket: ClientConnection,
+    expected_type: str,
+    timeout: float,
+    observed_insights: list[dict[str, object]] | None = None,
+) -> dict[str, object]:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while True:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError(f"Timed out waiting for event '{expected_type}'")
+        message = await receive_json(socket, remaining)
+        actual_type = message.get("type")
+        if actual_type == expected_type:
+            return message
+        # Partial insights are asynchronous and may arrive between any two replies.
+        if actual_type == "insight" and expected_type != "insight":
+            if observed_insights is not None:
+                observed_insights.append(message)
+            continue
         raise RuntimeError(f"Expected event '{expected_type}', received '{actual_type}'")
-    return message
 
 
 async def run_scenario(socket: ClientConnection, timeout: float) -> None:
@@ -219,7 +235,8 @@ async def run_file(
             continue
         if isinstance(action, ExpectInsightAction):
             if last_insight is None:
-                raise RuntimeError("Expected an insight for the preceding transcript, but none arrived")
+                last_insight = await expect(socket, "insight", max(timeout, 60.0))
+                insight_count += 1
             text = str(last_insight.get("text", ""))
             if action.contains and action.contains.casefold() not in text.casefold():
                 raise RuntimeError(
@@ -239,9 +256,11 @@ async def run_file(
         await send_json(
             socket, transcript_payload(action.text, final=action.final, language=language)
         )
-        acknowledgement = await expect(socket, "ack", timeout)
+        asynchronous_insights: list[dict[str, object]] = []
+        acknowledgement = await expect(socket, "ack", timeout, asynchronous_insights)
         transcript_count += 1
-        last_insight = None
+        last_insight = asynchronous_insights[-1] if asynchronous_insights else None
+        insight_count += len(asynchronous_insights)
         if acknowledgement.get("triggered") is True:
             result = await receive_json(socket, max(timeout, 60.0))
             if result.get("type") == "error":

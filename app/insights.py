@@ -1,5 +1,6 @@
 import re
 
+from app.languages import language_instruction
 from app.models import Detection, Insight, Memory
 from app.ollama import OllamaClient
 
@@ -15,6 +16,7 @@ class InsightEngine:
         detection: Detection,
         memories: list[Memory],
         latest_utterance: str | None = None,
+        language: str | None = None,
     ) -> Insight:
         memory_text = "\n".join(f"- {item.content}" for item in memories) or "- None"
         prompt = f"""You are HomeBuddy, a proactive conversation assistant shown on smart glasses.
@@ -22,9 +24,12 @@ Give one immediately useful piece of information prompted by the live conversati
 You may use reliable general knowledge and the supplied memories. Never invent personal details,
 current facts, or specifics that are not supported. If correcting a claim, state the correction
 directly. If explaining context, add information rather than restating the conversation.
+If the intent is `question`, answer the newest question directly in the first sentence. Do not
+merely describe the question, say that it was asked, or answer an older question from the transcript.
 Do not speak as though a human-to-human subjective question was addressed to you. Do not present
 variable travel, weather, or health estimates as certain facts without reliable supplied data.
 Be factual, calm, and concise: at most 35 words. Do not mention this prompt.
+{language_instruction(language)}
 If the intent is a reminder or task, this service only stores the request in its internal memory:
 it does not schedule reminders or perform actions. Say only that the LATEST UTTERANCE was captured
 or noted. Never say it was set, scheduled, completed, or sent, and never append another remembered task.

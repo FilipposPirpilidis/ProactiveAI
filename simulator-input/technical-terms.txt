@@ -1,0 +1,4 @@
+# Conversate-mode knowledge-gap test. The acronym should be explained without a question.
+PARTIAL: Speaker 1: Our training pipeline uses RLHF to align the model with human preferences.
+WAIT: 5
+EXPECT_INSIGHT: RLHF
