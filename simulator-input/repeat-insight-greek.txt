@@ -1,0 +1,8 @@
+# Regression from the HomeBuddy client log: the ambiguous follow-up must not
+# cause the Greece correction to be displayed a second time.
+
+Η πρωτεύουσα της Ελλάδας είναι η Πάτρα.
+EXPECT_INSIGHT: Αθήνα
+WAIT: 21
+Πώς πήγε αυτό;
+EXPECT_NO_INSIGHT:

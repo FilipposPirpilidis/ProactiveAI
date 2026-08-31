@@ -209,6 +209,14 @@ tempCodeRunnerFile.py
 # PyPI configuration file
 .pypirc
 
+# HomeBuddy / ProactiveAI local state
+.venv*/
+*.db
+*.db-shm
+*.db-wal
+data/
+.DS_Store
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

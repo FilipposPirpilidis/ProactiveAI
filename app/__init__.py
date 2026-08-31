@@ -1,0 +1,2 @@
+"""HomeBuddy proactive AI service."""
+

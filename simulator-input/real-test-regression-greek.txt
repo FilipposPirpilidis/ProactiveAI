@@ -1,0 +1,9 @@
+# A distinct objective question must bypass the active cooldown.
+FINAL: Please remind me that I need to call Alex tomorrow.
+EXPECT_INSIGHT:
+FINAL: Ποια είναι η κύρια πόλη και πρωτεύουσα της Λήμνου;
+EXPECT_INSIGHT: Μύρινα
+
+# Asking the same thing with different wording must not produce another card.
+FINAL: Ποια είναι η μεγαλύτερη πόλη στο νησί της Λήμνου;
+EXPECT_NO_INSIGHT:

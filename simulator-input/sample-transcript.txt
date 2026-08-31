@@ -1,0 +1,8 @@
+# Every plain non-empty line is sent as one finalized Soniox-style transcript.
+# PARTIAL sends an interim result. WAIT adds a realistic pause in seconds.
+
+PARTIAL: We are walking to
+FINAL: We are walking to the clinic now.
+WAIT: 1
+Okay
+I think the capital of Australia is Sydney.

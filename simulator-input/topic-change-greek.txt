@@ -1,0 +1,9 @@
+# Regression scenario: the second insight must answer the new cooking question,
+# never repeat the earlier Germany correction.
+
+Η πρωτεύουσα της Γερμανίας είναι το Μόναχο.
+WAIT: 21
+Ας αλλάξουμε θέμα και ας μιλήσουμε για μαγειρική.
+WAIT: 1
+Πόσο ψωμί μπορεί να χρειάζεσαι για ένα πιάτο φαΐ;
+EXPECT_INSIGHT:

@@ -1,0 +1,42 @@
+services:
+  proactive-ai:
+    build:
+      context: .
+    image: homebuddy/proactive-ai:local
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://192.168.68.112:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3.5:cloud}
+      API_TOKEN: ${API_TOKEN:-}
+      DETECTOR_MODE: ${DETECTOR_MODE:-conversate}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      DATABASE_PATH: /data/homebuddy.db
+    volumes:
+      - homebuddy-data:/data
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  simulator:
+    image: homebuddy/proactive-ai:local
+    profiles: ["simulator"]
+    depends_on:
+      proactive-ai:
+        condition: service_healthy
+    environment:
+      SIMULATOR_WS_URL: ws://proactive-ai:8080/v1/ws
+      SIMULATOR_TEXT_FILE: /input/sample-transcript.txt
+      API_TOKEN: ${API_TOKEN:-}
+    volumes:
+      - ./simulator-input:/input:ro
+    command: ["python", "scripts/simulator.py", "file"]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  homebuddy-data:
