@@ -611,6 +611,11 @@ short answer is allowed to be shorter, and clarity may use somewhat more space. 
 limited to 220 characters at a sentence or word boundary so unexpected model verbosity cannot
 overflow the glasses UI. Both values are configurable.
 
+Cards follow the transcript's `language` value while preserving necessary proper names, acronyms,
+product names, and technical terms in their original writing system. Sanitization never deletes
+words merely because they use another script, so mixed content such as Greek with `offer letter`,
+Japanese with `RAG`, or Arabic with `OAuth 2.0` remains intact.
+
 Questions are high-priority signals in every detector mode. Explicit `?` punctuation (and Greek
 `;`) triggers deterministically, while common spoken openings such as “why,” “how,” “can you,” and
 “do you know” cover STT results that omit punctuation. The generated card answers the newest

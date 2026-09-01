@@ -1,4 +1,5 @@
 import re
+import unicodedata
 
 from app.languages import language_instruction
 from app.models import Detection, Insight, Memory
@@ -84,21 +85,25 @@ def sanitize_insight_text(
     language: str | None = None,
     max_characters: int = 220,
 ) -> str:
-    """Remove accidental CJK clauses emitted inside an otherwise non-CJK card."""
-    has_cjk = bool(re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", text))
-    has_non_cjk_words = bool(re.search(r"[A-Za-z\u0370-\u03ff\u1f00-\u1fff]", text))
-    if has_cjk and has_non_cjk_words:
-        text = re.sub(
-            r",?\s*[\u3400-\u4dbf\u4e00-\u9fff][^.!?;…\u3002\uff01\uff1f]*[\u3002\uff01\uff1f]?",
-            "",
-            text,
-        )
-    has_greek = bool(re.search(r"[\u0370-\u03ff\u1f00-\u1fff]", text))
-    if language and language.casefold().startswith("el") and has_greek:
-        text = re.sub(r"\b[a-z][A-Za-z']*\b", "", text)
-        text = re.sub(r",\s*([.!?])", r"\1", text)
-        text = re.sub(r"\s{2,}", " ", text)
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text).strip(" ,")
+    """Normalize a card without guessing which writing systems belong in it.
+
+    Technical terms, product names, acronyms, and translations routinely mix
+    scripts. Language correctness belongs in the generation prompt; deleting
+    words by script can corrupt valid content such as Greek ``offer letter`` or
+    Japanese ``RAG``. The sanitizer therefore performs structure-only cleanup.
+    """
+    del language  # Kept in the public signature for callers and future policies.
+    text = unicodedata.normalize("NFC", text)
+    text = "".join(
+        character
+        for character in text
+        if unicodedata.category(character) != "Cc"
+        or character in {"\n", "\t"}
+    )
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([,.;:!?，。；：！？])", r"\1", text)
+    text = re.sub(r"\(\s*\)|\[\s*\]|\{\s*\}", "", text)
+    text = re.sub(r"\s{2,}", " ", text).strip(" ,")
     if len(text) <= max_characters:
         return text
 
@@ -106,9 +111,9 @@ def sanitize_insight_text(
     # a word boundary. The ellipsis is included in the configured maximum.
     available = max(1, max_characters - 1)
     candidate = text[:available]
-    sentence_ends = [candidate.rfind(mark) for mark in ".!?;"]
+    sentence_ends = [candidate.rfind(mark) for mark in ".!?;。！？；؟۔"]
     sentence_end = max(sentence_ends)
-    if sentence_end >= 40:
+    if sentence_end >= 12:
         return candidate[: sentence_end + 1].strip()
     if " " in candidate:
         candidate = candidate.rsplit(" ", 1)[0]

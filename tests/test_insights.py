@@ -37,16 +37,34 @@ async def test_generates_short_glasses_insight_with_context() -> None:
     assert "Aim for about 150 characters" in ollama.messages[1]["content"]
 
 
-def test_removes_accidental_cjk_clause_from_greek_card() -> None:
+def test_preserves_mixed_script_content_without_guessing_language() -> None:
     assert sanitize_insight_text(
         "Η πρωτεύουσα της Λήμνου είναι η Μύρινα,位于该岛西海岸。", "el"
-    ) == "Η πρωτεύουσα της Λήμνου είναι η Μύρινα"
+    ) == "Η πρωτεύουσα της Λήμνου είναι η Μύρινα,位于该岛西海岸。"
 
 
-def test_removes_accidental_english_words_from_greek_card() -> None:
+def test_preserves_english_technical_terms_in_greek_card() -> None:
     assert sanitize_insight_text(
-        "Η Μύρινα, located στη δυτική ακτή.", "el"
-    ) == "Η Μύρινα, στη δυτική ακτή."
+        "Περίμενε το επίσημο offer letter πριν παραιτηθείς.", "el"
+    ) == "Περίμενε το επίσημο offer letter πριν παραιτηθείς."
+
+
+def test_preserves_technical_terms_across_language_families() -> None:
+    cards = (
+        ("RAGは検索結果をLLMの回答に追加します。", "ja"),
+        ("استخدم OAuth 2.0 بدلًا من مشاركة كلمة المرور.", "ar"),
+        ("El backend usa PostgreSQL y Redis.", "es"),
+        ("RAG связывает поиск с ответом LLM.", "ru"),
+    )
+
+    for card, language in cards:
+        assert sanitize_insight_text(card, language) == card
+
+
+def test_removes_empty_delimiters_without_removing_neighboring_terms() -> None:
+    assert sanitize_insight_text(
+        "Περίμενε το επίσημο offer letter ( ) πριν παραιτηθείς.", "el"
+    ) == "Περίμενε το επίσημο offer letter πριν παραιτηθείς."
 
 
 def test_formats_captured_reminder_without_claiming_it_was_scheduled() -> None:
@@ -69,3 +87,10 @@ def test_long_insight_prefers_a_complete_sentence() -> None:
     text = first + " " + ("Additional detail keeps going " * 12)
 
     assert sanitize_insight_text(text, max_characters=120) == first
+
+
+def test_long_cjk_insight_prefers_a_complete_sentence() -> None:
+    first = "RAGは検索結果をLLMの回答に追加します。"
+    text = first + ("追加の説明が長く続きます" * 12)
+
+    assert sanitize_insight_text(text, "ja", max_characters=80) == first
