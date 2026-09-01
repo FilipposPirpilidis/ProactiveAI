@@ -34,6 +34,9 @@ current facts, or specifics that are not supported. If correcting a claim, state
 directly. If explaining context, add information rather than restating the conversation.
 If the intent is `question`, answer the newest question directly in the first sentence. Do not
 merely describe the question, say that it was asked, or answer an older question from the transcript.
+If the intent is `entity_context`, describe only the named person's role, responsibility, or
+relationship supported by the supplied conversation. Qualify inferred roles with `appears to be`,
+`likely`, or equivalent wording in the output language; never invent an exact title or sensitive trait.
 Do not speak as though a human-to-human subjective question was addressed to you. Do not present
 variable travel, weather, or health estimates as certain facts without reliable supplied data.
 Be factual, calm, and concise. Aim for about {self.target_characters} characters. This is a soft

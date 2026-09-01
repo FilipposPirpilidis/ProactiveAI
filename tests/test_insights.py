@@ -37,6 +37,28 @@ async def test_generates_short_glasses_insight_with_context() -> None:
     assert "Aim for about 150 characters" in ollama.messages[1]["content"]
 
 
+async def test_entity_context_generation_requires_qualified_role_language() -> None:
+    ollama = RecordingOllama()
+    engine = InsightEngine(ollama)  # type: ignore[arg-type]
+
+    await engine.generate(
+        "session-a",
+        "Vincent conducted the interview and owns final feedback.",
+        Detection(
+            should_trigger=True,
+            confidence=0.88,
+            reason="role clues",
+            intent="entity_context",
+        ),
+        [],
+        "Vincent owns the final feedback.",
+    )
+
+    prompt = ollama.messages[1]["content"]
+    assert "describe only the named person's role" in prompt
+    assert "never invent an exact title or sensitive trait" in prompt
+
+
 def test_preserves_mixed_script_content_without_guessing_language() -> None:
     assert sanitize_insight_text(
         "Η πρωτεύουσα της Λήμνου είναι η Μύρινα,位于该岛西海岸。", "el"

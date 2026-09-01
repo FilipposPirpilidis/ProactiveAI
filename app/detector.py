@@ -128,7 +128,7 @@ class ProactiveDetector:
             result = Detection(should_trigger=False, confidence=1 - score, reason="no_actionable_signal")
 
         if result.should_trigger and result.confidence >= self.threshold:
-            if cooldown_active and result.intent in {"context", "suggestion"}:
+            if cooldown_active and result.intent in {"context", "entity_context", "suggestion"}:
                 result.should_trigger = False
                 result.reason = "cooldown_low_priority"
                 return result
@@ -176,6 +176,18 @@ class ProactiveDetector:
             "company/person name alone, a universally familiar abbreviation in this context, a term "
             "already explained in recent conversation or a displayed card, or when the speaker is "
             "currently defining it themselves. "
+            "Also track named people across the recent conversation. Use intent `entity_context` only "
+            "when the latest utterance introduces a name or adds new concrete evidence that makes the "
+            "person's role, responsibility, or relationship materially clearer. Require at least two "
+            "conversation-supported clues when the role was not directly stated. For example, if Vincent "
+            "conducted the post-HR interview and later owns feedback or the hiring decision, a useful card "
+            "may say: `From this conversation, Vincent appears to be the hiring manager or decision-maker.` "
+            "Always mark an inferred role with wording such as `appears to be`, `likely`, or `seems to be`; "
+            "do not present it as confirmed. Prefer a broad supported description such as `hiring contact` "
+            "or `technical interviewer` over inventing an exact job title. Never identify a person from a "
+            "name alone or infer personality, competence, motives, age, health, family status, ethnicity, "
+            "religion, politics, sexuality, or other sensitive traits. Stay silent if the role is already "
+            "obvious, the evidence conflicts, or the clarification would not help the wearer follow along. "
             "Do not trigger for greetings, ordinary narration, generic advice, obvious restatements, "
             "speculation, incomplete speech, sensitive credentials, or when there is not enough context. "
             "Do not treat garbled or low-coherence speech as a factual claim. Do not label variable or "
@@ -194,7 +206,7 @@ class ProactiveDetector:
             "scheduled, completed, or sent, and never append an unrelated remembered task. If should_trigger "
             "is false, set insight to null. Return JSON only: "
             '{"should_trigger":bool,"confidence":0..1,"reason":"short","intent":'
-            '"context|fact_check|definition|suggestion|question|reminder|task|decision|warning|none",'
+            '"context|entity_context|fact_check|definition|suggestion|question|reminder|task|decision|warning|none",'
             '"insight":"display text or null"}.\n'
             "Available personal/meeting context:\n"
             + (memory_context or "None")

@@ -606,6 +606,13 @@ Retrieval is lightweight: the newest 100 client/global memories are ranked using
 
 The detector can surface questions, context, corrections, definitions, suggestions, warnings, reminders, tasks, and decisions. In `conversate` mode it also looks for knowledge gaps: newly introduced acronyms, specialist terminology, technical methods, protocols, standards, scientific concepts, and difficult references that would benefit from a short plain-language explanation. It avoids explaining terms that are already familiar in context, were recently explained, or are currently being defined by a speaker.
 
+`conversate` can also emit `entity_context` when recent conversation provides enough evidence to
+clarify a named person's role or relationship. Inferred roles are explicitly qualified—for example,
+“From this conversation, Vincent appears to be the hiring manager”—and require at least two concrete
+clues unless the role was directly stated. A name alone never triggers identification, and the engine
+does not infer sensitive traits, personality, motives, family status, health, politics, or an exact
+job title unsupported by the transcript.
+
 Insight cards aim for roughly 150 characters rather than a strict word count. A naturally complete
 short answer is allowed to be shorter, and clarity may use somewhat more space. Output is safely
 limited to 220 characters at a sentence or word boundary so unexpected model verbosity cannot

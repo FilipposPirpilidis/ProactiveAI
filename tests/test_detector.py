@@ -46,6 +46,21 @@ class TechnicalTermOllama:
         )
 
 
+class EntityRoleOllama:
+    def __init__(self) -> None:
+        self.last_prompt = ""
+
+    async def chat(self, *args: object, **kwargs: object) -> str:
+        messages = args[0]
+        self.last_prompt = messages[0]["content"]  # type: ignore[index]
+        return (
+            '{"should_trigger":true,"confidence":0.88,'
+            '"reason":"role supported by interview and feedback clues",'
+            '"intent":"entity_context",'
+            '"insight":"From this conversation, Vincent appears to be the hiring manager or decision-maker."}'
+        )
+
+
 async def test_strong_question_triggers() -> None:
     detector = ProactiveDetector(UnusedOllama(), mode="heuristic", cooldown_seconds=0)  # type: ignore[arg-type]
 
@@ -151,6 +166,27 @@ async def test_conversate_explains_a_short_technical_acronym_without_a_question(
     assert result.insight is not None and result.insight.startswith("RLHF")
     assert "proactively trigger" in ollama.last_prompt
     assert "required output language is English" in ollama.last_prompt
+
+
+async def test_conversate_can_infer_a_named_person_role_from_conversation_clues() -> None:
+    ollama = EntityRoleOllama()
+    detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=0)  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        (
+            "The recruiter introduced me to Vincent after the HR screening. "
+            "Vincent ran the next interview and said he would own the final feedback."
+        ),
+        "Vincent said he would own the final feedback.",
+        language="en",
+    )
+
+    assert result.should_trigger is True
+    assert result.intent == "entity_context"
+    assert result.insight is not None and "appears to be" in result.insight
+    assert "Require at least two conversation-supported clues" in ollama.last_prompt
+    assert "Never identify a person from a name alone" in ollama.last_prompt
 
 
 async def test_last_displayed_insight_is_included_to_prevent_stale_repeats() -> None:

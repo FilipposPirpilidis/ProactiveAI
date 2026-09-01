@@ -153,7 +153,9 @@ class PartialInsightWorker:
             latest_segment = self._unseen_segment(transcript.text)
             if len(latest_segment.split()) < 4:
                 return
-            partial_context = self._tail_words(transcript.text, 120)
+            # Keep enough rolling speech to connect a person's earlier name with
+            # later clues about their role while bounding prompt size and latency.
+            partial_context = self._tail_words(transcript.text, 220)
             conversation = " ".join(
                 part for part in (self.buffer.latest_text(5), partial_context) if part
             )
