@@ -231,6 +231,44 @@ async def test_explicit_question_in_any_language_triggers_deterministically() ->
     assert not ollama.called
 
 
+async def test_spoken_questions_survive_missing_stt_punctuation_in_multiple_languages() -> None:
+    cases = (
+        ("el", "Θα μπορούσα να πάω με αεροπλάνο."),
+        ("en", "Could I go by plane."),
+        ("es", "Podría viajar en avión."),
+        ("de", "Könnte ich mit dem Flugzeug reisen."),
+        ("fr", "Pourrais-je voyager en avion."),
+        ("it", "Potrei viaggiare in aereo."),
+        ("pt", "Poderia viajar de avião."),
+        ("ru", "Можно ли поехать на самолёте."),
+        ("ar", "هل يمكن أن أسافر بالطائرة."),
+        ("ja", "飛行機で行けますか"),
+        ("ko", "비행기로 갈 수 있나요"),
+        ("zh", "可以坐飞机去吗"),
+    )
+
+    for language, text in cases:
+        detector = ProactiveDetector(UnusedOllama(), mode="conversate")  # type: ignore[arg-type]
+        result = await detector.detect_conversation(
+            f"session-{language}", text, text, language=language
+        )
+        assert result.should_trigger is True, (language, result.reason)
+        assert result.intent == "question"
+
+
+def test_related_answers_to_distinct_questions_are_not_treated_as_duplicates() -> None:
+    detector = ProactiveDetector(UnusedOllama(), mode="conversate")  # type: ignore[arg-type]
+    detector.record_insight(
+        "session-1",
+        "Η οδική απόσταση Αθήνας-Πάτρας είναι περίπου 215 χλμ. μέσω της Ολυμπίας Οδού.",
+    )
+
+    assert not detector.is_repeated_insight(
+        "session-1",
+        "Δεν υπάρχουν απευθείας εμπορικές πτήσεις Αθήνα-Πάτρα· προτίμησε αυτοκίνητο ή λεωφορείο.",
+    )
+
+
 async def test_distinct_question_bypasses_active_cooldown() -> None:
     detector = ProactiveDetector(UnusedOllama(), mode="heuristic", cooldown_seconds=30)  # type: ignore[arg-type]
 

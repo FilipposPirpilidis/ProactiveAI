@@ -624,9 +624,13 @@ words merely because they use another script, so mixed content such as Greek wit
 Japanese with `RAG`, or Arabic with `OAuth 2.0` remains intact.
 
 Questions are high-priority signals in every detector mode. Explicit `?` punctuation (and Greek
-`;`) triggers deterministically, while common spoken openings such as “why,” “how,” “can you,” and
-“do you know” cover STT results that omit punctuation. The generated card answers the newest
-question directly; older transcript remains context only.
+`;`) triggers deterministically. Multilingual spoken-question patterns cover STT results that omit
+or misclassify punctuation, including feasibility forms such as Greek `Θα μπορούσα…`, English
+`Could I…`, Spanish `Podría…`, German `Könnte ich…`, and equivalent supported-language forms.
+Useful negative answers still trigger—for example, explaining that no direct flight exists and
+offering a practical alternative. The generated card answers the newest question directly; older
+transcript remains context only. Distinct questions on the same topic are not suppressed merely
+because their answers repeat place or subject names.
 
 You can exercise this behavior with the included file scenario:
 

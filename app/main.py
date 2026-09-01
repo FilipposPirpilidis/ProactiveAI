@@ -213,7 +213,12 @@ class PartialInsightWorker:
                     not current
                     or current[0] < revision
                     or not self._compatible(transcript, current[1])
-                    or self.services.detector.is_repeated_insight(self.session_id, insight.text)
+                    or (
+                        detection.intent != "question"
+                        and self.services.detector.is_repeated_insight(
+                            self.session_id, insight.text
+                        )
+                    )
                 ):
                     return
 
@@ -532,6 +537,7 @@ async def _process_final_transcript(
         transcript.text,
         memory_context,
         transcript.language,
+        record_trigger=False,
     )
     if not detection.should_trigger:
         await _send_ack(websocket, send_lock, transcript.event_id, False, detection.reason)
@@ -579,12 +585,16 @@ async def _process_final_transcript(
     )
 
     async with insight_lock:
-        if services.detector.is_repeated_insight(session_id, insight.text):
+        if (
+            detection.intent != "question"
+            and services.detector.is_repeated_insight(session_id, insight.text)
+        ):
             await _send_ack(websocket, send_lock, transcript.event_id, False, "repeated_insight")
             return
 
         await _send_ack(websocket, send_lock, transcript.event_id, True, detection.reason)
         await services.memory.store_insight(insight)
+        services.detector.record_trigger(session_id, transcript.text)
         services.detector.record_insight(session_id, insight.text)
         await _send_json(websocket, send_lock, _insight_payload(insight))
 

@@ -38,6 +38,9 @@ class FakeInsightEngine:
 
 
 class CombinedDetector:
+    def record_trigger(self, session_id: str, text: str) -> None:
+        pass
+
     def record_insight(self, session_id: str, text: str) -> None:
         pass
 

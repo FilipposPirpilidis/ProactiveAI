@@ -23,6 +23,21 @@ class ProactiveDetector:
         r"^(um+|uh+|hmm+|okay|ok|yeah|yes|no|right|hello|hi)[.! ]*$",
         r"\b(?:password|passcode|credit card|cvv|social security)\b",
     )
+    _spoken_question_patterns = {
+        "ar": (r"^(?:من|ماذا|لماذا|كيف|أين|متى|كم|هل|يمكنني|هل يمكن)\b",),
+        "de": (r"^(?:wer|was|warum|wieso|wie|wo|wann|welch|kann ich|können wir|könnte ich|gibt es|ist es möglich)\b",),
+        "el": (r"^(?:ποιος|ποια|ποιο|τι|γιατί|πως|πώς|πού|πότε|πόσο|πόση|πόσοι|πόσες|μπορώ|μπορούμε|θα μπορούσα|θα μπορούσαμε|γίνεται|υπάρχει|υπάρχουν|είναι δυνατό)\b",),
+        "en": (r"^(?:what|why|how|where|who|when|which|can i|can we|could i|could we|is there|are there|is it possible|would it be possible)\b",),
+        "es": (r"^(?:qué|por qué|cómo|dónde|cuándo|cuánto|puedo|podemos|podría|podríamos|hay|es posible)\b",),
+        "fr": (r"^(?:qui|quoi|pourquoi|comment|où|quand|combien|puis-je|peut-on|pourrais-je|est-ce que|y a-t-il)\b",),
+        "it": (r"^(?:chi|cosa|perché|come|dove|quando|quanto|posso|possiamo|potrei|potremmo|c'è|ci sono|è possibile)\b",),
+        "ja": (r"(?:ですか|ますか|でしょうか|できますか|可能ですか)$",),
+        "ko": (r"(?:나요|까요|습니까|있나요|가능한가요)$",),
+        "nl": (r"^(?:wie|wat|waarom|hoe|waar|wanneer|hoeveel|kan ik|kunnen we|zou ik|is er|is het mogelijk)\b",),
+        "pt": (r"^(?:quem|o que|por que|como|onde|quando|quanto|posso|podemos|poderia|poderíamos|há|é possível)\b",),
+        "ru": (r"^(?:кто|что|почему|зачем|как|где|когда|сколько|могу ли|можем ли|можно ли|есть ли|возможно ли)\b",),
+        "zh": (r"^(?:什么|为什么|怎么|哪里|哪儿|多少|能否|可以)", r"(?:吗|呢|么)$"),
+    }
 
     def __init__(
         self,
@@ -55,7 +70,10 @@ class ProactiveDetector:
             previous_terms = self._content_terms(previous)
             shared = len(terms & previous_terms)
             overlap = shared / max(1, min(len(terms), len(previous_terms)))
-            if overlap >= 0.60 or shared >= 4:
+            # Topic words naturally repeat across distinct cards in one
+            # conversation. Four shared terms was enough to suppress a flight
+            # answer after a road-distance answer about the same cities.
+            if overlap >= 0.72 or shared >= 8:
                 return True
         return False
 
@@ -76,13 +94,16 @@ class ProactiveDetector:
             r"(?:^|\n)\s*speaker\s+\d+\s*:\s*", " ", latest_utterance, flags=re.IGNORECASE
         )
         normalized = " ".join(utterance_without_labels.lower().split())
-        if len(normalized) < 12 or any(re.search(p, normalized) for p in self._ignore_patterns):
+        spoken_question = self._looks_like_spoken_question(normalized, language)
+        if (len(normalized) < 12 and not spoken_question) or any(
+            re.search(p, normalized) for p in self._ignore_patterns
+        ):
             return Detection(should_trigger=False, confidence=0.98, reason="noise_or_sensitive")
 
         word_count = len(normalized.split())
         is_question = normalized.endswith("?") or (
             bool(language) and language.lower().startswith("el") and normalized.endswith(";")
-        )
+        ) or spoken_question
         cooldown_active = False
         previous = self._last_trigger.get(session_id)
         if previous:
@@ -156,7 +177,10 @@ class ProactiveDetector:
             "an already displayed insight unless the latest utterance explicitly repeats or challenges it. "
             "If the latest utterance is a direct informational question in any language and a useful "
             "answer is possible, should_trigger must be true. Do not dismiss it as rhetorical merely "
-            "because its wording is casual. Answer that question—not an earlier topic. Questions that "
+            "because its wording is casual or STT ended it with a period instead of question punctuation. "
+            "Treat feasibility and option requests such as `Could I go by plane` as questions. A useful "
+            "negative answer such as `No direct flight exists` still adds value and must trigger; briefly "
+            "offer a practical alternative when supported. Answer that question—not an earlier topic. Questions that "
             "are subjective, interpersonal, or clearly addressed from one person to another should not "
             "trigger merely so the assistant can state an opinion or say it has no opinion. "
             + language_instruction(language)
@@ -245,6 +269,14 @@ class ProactiveDetector:
         acronyms = re.findall(r"\b[A-Z][A-Z0-9-]{1,9}\b", text)
         ignored = {"AI", "AM", "PM", "TV", "OK", "ID"}
         return any(acronym not in ignored for acronym in acronyms)
+
+    @classmethod
+    def _looks_like_spoken_question(cls, text: str, language: str | None) -> bool:
+        code = language.casefold().split("-", 1)[0] if language else "en"
+        return any(
+            re.search(pattern, text, flags=re.IGNORECASE)
+            for pattern in cls._spoken_question_patterns.get(code, ())
+        )
 
     @staticmethod
     def _similar_text(left: str, right: str) -> float:

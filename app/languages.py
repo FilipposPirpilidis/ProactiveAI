@@ -1,4 +1,5 @@
 LANGUAGE_NAMES = {
+    "ar": "Arabic",
     "de": "German",
     "el": "Greek",
     "en": "English",
