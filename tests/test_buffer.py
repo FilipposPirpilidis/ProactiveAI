@@ -63,3 +63,14 @@ def test_partial_assembler_uses_latest_cumulative_stt_correction() -> None:
     )
 
     assert corrected.text == "Speaker 2: The capital is Sydney"
+
+
+def test_partial_assembler_keeps_continuity_when_provider_changes_event_ids() -> None:
+    assembler = PartialTranscriptAssembler()
+
+    assembler.update(transcript("revision-1", "A continuous interview begins here"))
+    assembled = assembler.update(
+        transcript("revision-2", "interview begins here and continues without silence")
+    )
+
+    assert assembled.text == "A continuous interview begins here and continues without silence"

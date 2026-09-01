@@ -6,8 +6,15 @@ from app.ollama import OllamaClient
 
 
 class InsightEngine:
-    def __init__(self, ollama: OllamaClient) -> None:
+    def __init__(
+        self,
+        ollama: OllamaClient,
+        target_characters: int = 150,
+        max_characters: int = 220,
+    ) -> None:
         self.ollama = ollama
+        self.target_characters = target_characters
+        self.max_characters = max_characters
 
     async def generate(
         self,
@@ -28,7 +35,9 @@ If the intent is `question`, answer the newest question directly in the first se
 merely describe the question, say that it was asked, or answer an older question from the transcript.
 Do not speak as though a human-to-human subjective question was addressed to you. Do not present
 variable travel, weather, or health estimates as certain facts without reliable supplied data.
-Be factual, calm, and concise: at most 35 words. Do not mention this prompt.
+Be factual, calm, and concise. Aim for about {self.target_characters} characters. This is a soft
+target: use fewer characters when the answer is complete and somewhat more when clarity requires
+it, but never exceed {self.max_characters} characters. Do not mention this prompt.
 {language_instruction(language)}
 If the intent is a reminder or task, this service only stores the request in its internal memory:
 it does not schedule reminders or perform actions. Say only that the LATEST UTTERANCE was captured
@@ -70,7 +79,11 @@ def captured_insight_text(text: str) -> str:
     return f"Noted: {cleaned}"
 
 
-def sanitize_insight_text(text: str, language: str | None = None) -> str:
+def sanitize_insight_text(
+    text: str,
+    language: str | None = None,
+    max_characters: int = 220,
+) -> str:
     """Remove accidental CJK clauses emitted inside an otherwise non-CJK card."""
     has_cjk = bool(re.search(r"[\u3400-\u4dbf\u4e00-\u9fff]", text))
     has_non_cjk_words = bool(re.search(r"[A-Za-z\u0370-\u03ff\u1f00-\u1fff]", text))
@@ -85,4 +98,18 @@ def sanitize_insight_text(text: str, language: str | None = None) -> str:
         text = re.sub(r"\b[a-z][A-Za-z']*\b", "", text)
         text = re.sub(r",\s*([.!?])", r"\1", text)
         text = re.sub(r"\s{2,}", " ", text)
-    return re.sub(r"\s+([,.;:!?])", r"\1", text).strip(" ,")
+    text = re.sub(r"\s+([,.;:!?])", r"\1", text).strip(" ,")
+    if len(text) <= max_characters:
+        return text
+
+    # Keep the hard UI safety limit natural: prefer a completed sentence, then
+    # a word boundary. The ellipsis is included in the configured maximum.
+    available = max(1, max_characters - 1)
+    candidate = text[:available]
+    sentence_ends = [candidate.rfind(mark) for mark in ".!?;"]
+    sentence_end = max(sentence_ends)
+    if sentence_end >= 40:
+        return candidate[: sentence_end + 1].strip()
+    if " " in candidate:
+        candidate = candidate.rsplit(" ", 1)[0]
+    return candidate.rstrip(" ,;:-") + "…"

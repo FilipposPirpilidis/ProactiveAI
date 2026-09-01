@@ -447,17 +447,24 @@ Partial transcripts receive:
 That acknowledgement is immediate and does not mean evaluation has stopped. In
 `DETECTOR_MODE=conversate`, the server evaluates the newest partial in a background
 worker while continuing to receive newer transcript events. The first rapidly changing
-updates are coalesced using `PARTIAL_INSIGHT_DEBOUNCE_MS` (default `400` ms). During
+updates are coalesced using `PARTIAL_INSIGHT_DEBOUNCE_MS` (default `250` ms). During
 uninterrupted speech, the engine periodically samples the newest partial instead of
-waiting indefinitely for silence; `PARTIAL_INSIGHT_INTERVAL_MS` (default `2000` ms)
-limits that evaluation rate. A final transcript cancels stale partial work. At most one
-model evaluation is active per WebSocket connection, and final evaluations are queued
-in order without blocking receipt or acknowledgement of newer transcripts.
+waiting indefinitely for silence; `PARTIAL_INSIGHT_INTERVAL_MS` (default `1500` ms)
+limits that evaluation rate. Once a card is emitted, subsequent evaluations focus on
+the new speech appended since that card rather than repeatedly classifying the entire
+interview. Low-priority partial cards use their own shorter
+`PARTIAL_INSIGHT_COOLDOWN_SECONDS` (default `6` seconds).
 
-Soniox may reuse one `event_id` while growing a cumulative partial and then cap it to a
-sliding text tail. The server reconstructs overlapping revisions for that event before
-evaluation and stores the assembled text when the final arrives. Clients should therefore
-keep the same `event_id` for every revision of one utterance and its final result.
+A final transcript cancels stale work from the same utterance. Partial and final
+evaluation have independent, single-flight lanes, so a slow final does not block the
+next partial. This bounds concurrency to at most one partial and one final model call per
+WebSocket while the receive loop continues acknowledging audio-derived transcripts.
+
+Soniox may reuse one `event_id`, issue a new ID for every revision, or cap a cumulative
+partial to a sliding text tail. The server reconstructs overlapping revisions as one
+active WebSocket speech stream and does not use `event_id` to decide whether a completed
+partial insight is still relevant. Clients may therefore use either stable or changing
+event IDs; `event_id` remains useful for correlating acknowledgements and insight sources.
 
 If a meaningful partial already contains enough information for a card, the server may
 later send this unsolicited event:
@@ -599,6 +606,11 @@ Retrieval is lightweight: the newest 100 client/global memories are ranked using
 
 The detector can surface questions, context, corrections, definitions, suggestions, warnings, reminders, tasks, and decisions. In `conversate` mode it also looks for knowledge gaps: newly introduced acronyms, specialist terminology, technical methods, protocols, standards, scientific concepts, and difficult references that would benefit from a short plain-language explanation. It avoids explaining terms that are already familiar in context, were recently explained, or are currently being defined by a speaker.
 
+Insight cards aim for roughly 150 characters rather than a strict word count. A naturally complete
+short answer is allowed to be shorter, and clarity may use somewhat more space. Output is safely
+limited to 220 characters at a sentence or word boundary so unexpected model verbosity cannot
+overflow the glasses UI. Both values are configurable.
+
 Questions are high-priority signals in every detector mode. Explicit `?` punctuation (and Greek
 `;`) triggers deterministically, while common spoken openings such as “why,” “how,” “can you,” and
 “do you know” cover STT results that omit punctuation. The generated card answers the newest
@@ -627,15 +639,18 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `DETECTOR_MODE` | `conversate` | `conversate`, `hybrid`, or `heuristic` |
 | `DETECTOR_THRESHOLD` | `0.62` | Minimum accepted trigger confidence |
 | `INSIGHT_COOLDOWN_SECONDS` | `20` | Low-priority per-session cooldown |
-| `PARTIAL_INSIGHT_DEBOUNCE_MS` | `400` | Delay used to coalesce rapidly changing partials in `conversate` mode |
-| `PARTIAL_INSIGHT_INTERVAL_MS` | `2000` | Minimum start-to-start partial evaluation interval during continuous speech |
+| `PARTIAL_INSIGHT_DEBOUNCE_MS` | `250` | Delay used to coalesce rapidly changing partials in `conversate` mode |
+| `PARTIAL_INSIGHT_INTERVAL_MS` | `1500` | Minimum start-to-start partial evaluation interval during continuous speech |
+| `PARTIAL_INSIGHT_COOLDOWN_SECONDS` | `6` | Cooldown for low-priority cards found in partial speech; final cards retain `INSIGHT_COOLDOWN_SECONDS` |
+| `INSIGHT_TARGET_CHARACTERS` | `150` | Soft target for each glasses card; shorter complete answers remain valid |
+| `INSIGHT_MAX_CHARACTERS` | `220` | Hard UI safety ceiling; oversized output is cut at a sentence or word boundary |
 | `TRANSCRIPT_WINDOW_SECONDS` | `90` | Rolling context age |
 | `TRANSCRIPT_MAX_ITEMS` | `40` | Rolling context item limit |
 | `MEMORY_RESULT_LIMIT` | `5` | Maximum retrieved memories |
 | `DATABASE_PATH` | `/data/homebuddy.db` | SQLite database path |
 | `LOG_LEVEL` | `INFO` | Python log level |
 
-Compose forwards the Ollama, authentication, detector-mode, partial debounce, and logging values from `.env`, and sets `DATABASE_PATH` to the volume. Other tuning variables use their defaults. To override one in Docker, add it under `services.proactive-ai.environment` in `compose.yaml`, then recreate the service:
+Compose forwards the Ollama, authentication, detector-mode, partial timing, and logging values from `.env`, and sets `DATABASE_PATH` to the volume. Other tuning variables use their defaults. To override one in Docker, add it under `services.proactive-ai.environment` in `compose.yaml`, then recreate the service:
 
 ```bash
 docker compose up -d --force-recreate proactive-ai

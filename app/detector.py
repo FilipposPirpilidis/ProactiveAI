@@ -30,11 +30,15 @@ class ProactiveDetector:
         mode: str = "conversate",
         threshold: float = 0.62,
         cooldown_seconds: int = 20,
+        insight_target_characters: int = 150,
+        insight_max_characters: int = 220,
     ) -> None:
         self.ollama = ollama
         self.mode = mode
         self.threshold = threshold
         self.cooldown = timedelta(seconds=cooldown_seconds)
+        self.insight_target_characters = insight_target_characters
+        self.insight_max_characters = insight_max_characters
         self._last_trigger: dict[str, tuple[datetime, str]] = {}
         self._recent_insights: dict[str, deque[str]] = {}
 
@@ -66,6 +70,7 @@ class ProactiveDetector:
         memory_context: str = "",
         language: str | None = None,
         record_trigger: bool = True,
+        cooldown_seconds: float | None = None,
     ) -> Detection:
         utterance_without_labels = re.sub(
             r"(?:^|\n)\s*speaker\s+\d+\s*:\s*", " ", latest_utterance, flags=re.IGNORECASE
@@ -82,7 +87,12 @@ class ProactiveDetector:
         previous = self._last_trigger.get(session_id)
         if previous:
             triggered_at, prior_text = previous
-            cooldown_active = datetime.now(timezone.utc) - triggered_at < self.cooldown
+            effective_cooldown = (
+                self.cooldown
+                if cooldown_seconds is None
+                else timedelta(seconds=cooldown_seconds)
+            )
+            cooldown_active = datetime.now(timezone.utc) - triggered_at < effective_cooldown
             duplicate = self._similar(normalized, prior_text) > 0.8
             if duplicate:
                 return Detection(should_trigger=False, confidence=0.95, reason="duplicate_utterance")
@@ -173,7 +183,10 @@ class ProactiveDetector:
             "without reliable supplied data; prefer silence or clearly qualified context. "
             "Prefer silence: the information must be useful enough to interrupt the wearer's view. "
             "If should_trigger is true, also write the final glasses card in `insight`: factual, "
-            "calm, immediately useful, and at most 35 words. Use reliable general knowledge and the "
+            f"calm, and immediately useful. Aim for about {self.insight_target_characters} characters; "
+            "this is a soft target, so use fewer characters for a complete direct answer and somewhat "
+            f"more when clarity requires it, but never exceed {self.insight_max_characters} characters. "
+            "Use reliable general knowledge and the "
             "required output language stated above for every word except unavoidable proper names or "
             "technical terms. "
             "supplied context, but never invent personal details or current facts. For reminders or "

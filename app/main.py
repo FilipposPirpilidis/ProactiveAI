@@ -49,8 +49,14 @@ class ServiceContainer:
             settings.detector_mode,
             settings.detector_threshold,
             settings.insight_cooldown_seconds,
+            settings.insight_target_characters,
+            settings.insight_max_characters,
         )
-        self.insights = InsightEngine(self.ollama)
+        self.insights = InsightEngine(
+            self.ollama,
+            settings.insight_target_characters,
+            settings.insight_max_characters,
+        )
 
 
 @asynccontextmanager
@@ -78,22 +84,23 @@ class PartialInsightWorker:
         self,
         websocket: WebSocket,
         send_lock: asyncio.Lock,
+        insight_lock: asyncio.Lock,
         services: ServiceContainer,
         buffer: TranscriptBuffer,
         client_id: str,
         session_id: str,
-        inference_lock: asyncio.Lock,
     ) -> None:
         self.websocket = websocket
         self.send_lock = send_lock
+        self.insight_lock = insight_lock
         self.services = services
         self.buffer = buffer
         self.client_id = client_id
         self.session_id = session_id
-        self.inference_lock = inference_lock
         self._revision = 0
         self._latest: tuple[int, TranscriptMessage] | None = None
         self._task: asyncio.Task[None] | None = None
+        self._last_insight_snapshot = ""
 
     def submit(self, transcript: TranscriptMessage) -> None:
         self._revision += 1
@@ -127,8 +134,7 @@ class PartialInsightWorker:
                     return
                 revision, transcript = latest
                 started_at = asyncio.get_running_loop().time()
-                async with self.inference_lock:
-                    await self._evaluate(revision, transcript)
+                await self._evaluate(revision, transcript)
 
                 current = self._latest
                 if not current or current[0] == revision:
@@ -144,18 +150,23 @@ class PartialInsightWorker:
 
     async def _evaluate(self, revision: int, transcript: TranscriptMessage) -> None:
         try:
+            latest_segment = self._unseen_segment(transcript.text)
+            if len(latest_segment.split()) < 4:
+                return
+            partial_context = self._tail_words(transcript.text, 120)
             conversation = " ".join(
-                part for part in (self.buffer.latest_text(5), transcript.text) if part
+                part for part in (self.buffer.latest_text(5), partial_context) if part
             )
             memories = await self.services.memory.relevant(self.client_id, conversation)
             memory_context = "\n".join(f"- {item.content}" for item in memories)
             detection = await self.services.detector.detect_conversation(
                 self.session_id,
                 conversation,
-                transcript.text,
+                latest_segment,
                 memory_context,
                 transcript.language,
                 record_trigger=False,
+                cooldown_seconds=self.services.settings.partial_insight_cooldown_seconds,
             )
             logger.info(
                 "Partial evaluated session=%s event=%s revision=%d triggered=%s reason=%s",
@@ -185,37 +196,43 @@ class PartialInsightWorker:
                     conversation,
                     detection,
                     memories,
-                    transcript.text,
+                    latest_segment,
                     transcript.language,
                 )
 
-            insight.text = sanitize_insight_text(insight.text, transcript.language)
-            current = self._latest
-            if (
-                not current
-                or current[0] < revision
-                or not self._compatible(transcript, current[1])
-                or self.services.detector.is_repeated_insight(self.session_id, insight.text)
-            ):
-                return
+            insight.text = sanitize_insight_text(
+                insight.text,
+                transcript.language,
+                self.services.settings.insight_max_characters,
+            )
+            async with self.insight_lock:
+                current = self._latest
+                if (
+                    not current
+                    or current[0] < revision
+                    or not self._compatible(transcript, current[1])
+                    or self.services.detector.is_repeated_insight(self.session_id, insight.text)
+                ):
+                    return
 
-            await self.services.memory.store_insight(insight)
-            current = self._latest
-            if not current or not self._compatible(transcript, current[1]):
-                return
-            self.services.detector.record_trigger(self.session_id, transcript.text)
-            self.services.detector.record_insight(self.session_id, insight.text)
-            logger.info(
-                "Partial insight emitted session=%s event=%s insight=%s",
-                self.session_id,
-                transcript.event_id,
-                insight.id,
-            )
-            await _send_json(
-                self.websocket,
-                self.send_lock,
-                _insight_payload(insight, event_id=transcript.event_id, source="partial"),
-            )
+                await self.services.memory.store_insight(insight)
+                current = self._latest
+                if not current or not self._compatible(transcript, current[1]):
+                    return
+                self.services.detector.record_trigger(self.session_id, latest_segment)
+                self.services.detector.record_insight(self.session_id, insight.text)
+                self._last_insight_snapshot = transcript.text
+                logger.info(
+                    "Partial insight emitted session=%s event=%s insight=%s",
+                    self.session_id,
+                    transcript.event_id,
+                    insight.id,
+                )
+                await _send_json(
+                    self.websocket,
+                    self.send_lock,
+                    _insight_payload(insight, event_id=transcript.event_id, source="partial"),
+                )
         except asyncio.CancelledError:
             raise
         except OllamaError:
@@ -223,12 +240,20 @@ class PartialInsightWorker:
 
     @staticmethod
     def _compatible(older: TranscriptMessage, newer: TranscriptMessage) -> bool:
-        if older.event_id != newer.event_id:
-            return False
         old_words = set(older.text.casefold().split())
         new_words = set(newer.text.casefold().split())
         overlap = len(old_words & new_words) / max(1, min(len(old_words), len(new_words)))
         return older.text.casefold() in newer.text.casefold() or overlap >= 0.75
+
+    def _unseen_segment(self, text: str) -> str:
+        previous = self._last_insight_snapshot
+        if previous and text.startswith(previous):
+            text = text[len(previous) :].strip()
+        return self._tail_words(text, 80)
+
+    @staticmethod
+    def _tail_words(text: str, count: int) -> str:
+        return " ".join(text.split()[-count:])
 
 
 class FinalTranscriptWorker:
@@ -238,14 +263,14 @@ class FinalTranscriptWorker:
         self,
         websocket: WebSocket,
         send_lock: asyncio.Lock,
-        inference_lock: asyncio.Lock,
+        insight_lock: asyncio.Lock,
         services: ServiceContainer,
         client_id: str,
         session_id: str,
     ) -> None:
         self.websocket = websocket
         self.send_lock = send_lock
-        self.inference_lock = inference_lock
+        self.insight_lock = insight_lock
         self.services = services
         self.client_id = client_id
         self.session_id = session_id
@@ -264,16 +289,16 @@ class FinalTranscriptWorker:
             while True:
                 transcript, conversation = await self._queue.get()
                 try:
-                    async with self.inference_lock:
-                        await _process_final_transcript(
-                            self.websocket,
-                            self.send_lock,
-                            self.services,
-                            self.client_id,
-                            self.session_id,
-                            transcript,
-                            conversation,
-                        )
+                    await _process_final_transcript(
+                        self.websocket,
+                        self.send_lock,
+                        self.insight_lock,
+                        self.services,
+                        self.client_id,
+                        self.session_id,
+                        transcript,
+                        conversation,
+                    )
                 except Exception:
                     logger.exception(
                         "Final transcript worker failed event=%s session=%s",
@@ -379,7 +404,7 @@ async def websocket_endpoint(
 
     await websocket.accept()
     send_lock = asyncio.Lock()
-    inference_lock = asyncio.Lock()
+    insight_lock = asyncio.Lock()
     buffer = TranscriptBuffer(
         services.settings.transcript_max_items,
         services.settings.transcript_window_seconds,
@@ -401,13 +426,14 @@ async def websocket_endpoint(
             "partial_insights": services.settings.detector_mode == "conversate",
             "partial_insight_debounce_ms": services.settings.partial_insight_debounce_ms,
             "partial_insight_interval_ms": services.settings.partial_insight_interval_ms,
+            "partial_insight_cooldown_seconds": services.settings.partial_insight_cooldown_seconds,
         }
     )
     partial_worker = PartialInsightWorker(
-        websocket, send_lock, services, buffer, client_id, session_id, inference_lock
+        websocket, send_lock, insight_lock, services, buffer, client_id, session_id
     )
     final_worker = FinalTranscriptWorker(
-        websocket, send_lock, inference_lock, services, client_id, session_id
+        websocket, send_lock, insight_lock, services, client_id, session_id
     )
 
     try:
@@ -488,6 +514,7 @@ async def _handle_transcript(
 async def _process_final_transcript(
     websocket: WebSocket,
     send_lock: asyncio.Lock,
+    insight_lock: asyncio.Lock,
     services: ServiceContainer,
     client_id: str,
     session_id: str,
@@ -543,16 +570,21 @@ async def _process_final_transcript(
             )
             return
 
-    insight.text = sanitize_insight_text(insight.text, transcript.language)
+    insight.text = sanitize_insight_text(
+        insight.text,
+        transcript.language,
+        services.settings.insight_max_characters,
+    )
 
-    if services.detector.is_repeated_insight(session_id, insight.text):
-        await _send_ack(websocket, send_lock, transcript.event_id, False, "repeated_insight")
-        return
+    async with insight_lock:
+        if services.detector.is_repeated_insight(session_id, insight.text):
+            await _send_ack(websocket, send_lock, transcript.event_id, False, "repeated_insight")
+            return
 
-    await _send_ack(websocket, send_lock, transcript.event_id, True, detection.reason)
-    await services.memory.store_insight(insight)
-    services.detector.record_insight(session_id, insight.text)
-    await _send_json(websocket, send_lock, _insight_payload(insight))
+        await _send_ack(websocket, send_lock, transcript.event_id, True, detection.reason)
+        await services.memory.store_insight(insight)
+        services.detector.record_insight(session_id, insight.text)
+        await _send_json(websocket, send_lock, _insight_payload(insight))
 
 
 def _insight_payload(

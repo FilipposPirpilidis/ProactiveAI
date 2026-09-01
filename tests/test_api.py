@@ -84,6 +84,19 @@ class SlowPartialDetector:
         )
 
 
+class SlowFinalFastPartialDetector(SlowPartialDetector):
+    async def detect_conversation(self, *args: object, **kwargs: object) -> Detection:
+        latest_utterance = str(args[2])
+        if "slow final" in latest_utterance:
+            await asyncio.sleep(0.15)
+            return Detection(
+                should_trigger=False,
+                confidence=0.9,
+                reason="no_actionable_signal",
+            )
+        return await super().detect_conversation(*args, **kwargs)
+
+
 def test_websocket_transcript_to_insight(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.db"))
     monkeypatch.setenv("DETECTOR_MODE", "heuristic")
@@ -206,7 +219,7 @@ def test_continuous_partial_updates_do_not_starve_evaluation(tmp_path, monkeypat
                 socket.send_json(
                     {
                         "type": "transcript",
-                        "event_id": "streaming-event",
+                        "event_id": f"streaming-event-{index}",
                         "text": (
                             "I think Sydney is the capital of Australia "
                             + " ".join(f"word-{number}" for number in range(index + 1))
@@ -223,7 +236,7 @@ def test_continuous_partial_updates_do_not_starve_evaluation(tmp_path, monkeypat
             assert len(acknowledgements) == 12
             assert len(insights) == 1
             assert insights[0]["source"] == "partial"
-            assert insights[0]["event_id"] == "streaming-event"
+            assert insights[0]["event_id"].startswith("streaming-event-")
 
     get_settings.cache_clear()
 
@@ -265,6 +278,51 @@ def test_slow_final_evaluation_does_not_delay_new_partial_ack(tmp_path, monkeypa
             assert first_response["type"] == "ack"
             assert first_response["event_id"] == "next-partial"
             assert first_response["reason"] == "partial"
+            # Let the deliberately slow fake inference finish before TestClient
+            # tears down the WebSocket event loop.
+            time.sleep(0.15)
+
+    get_settings.cache_clear()
+
+
+def test_slow_final_does_not_block_partial_inference(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "parallel-inference.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "conversate")
+    monkeypatch.setenv("PARTIAL_INSIGHT_DEBOUNCE_MS", "0")
+    configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        token = sign_in(client)
+        app.state.services.detector = SlowFinalFastPartialDetector()
+        app.state.services.insights = ForbiddenInsightEngine()
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=parallel-inference",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as socket:
+            socket.receive_json()
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "slow-final",
+                    "text": "This is a deliberately slow final transcript.",
+                    "is_final": True,
+                }
+            )
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "next-partial",
+                    "text": "Sydney is the capital of Australia according to the speaker.",
+                    "is_final": False,
+                }
+            )
+
+            partial_ack = socket.receive_json()
+            assert partial_ack["event_id"] == "next-partial"
+            insight = socket.receive_json()
+            assert insight["type"] == "insight"
+            assert insight["source"] == "partial"
 
     get_settings.cache_clear()
 
@@ -356,8 +414,8 @@ def test_websocket_rejects_missing_bearer_token(tmp_path, monkeypatch) -> None:
 
 def test_default_credentials_issue_token_and_signout_revokes_it(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "default-auth.db"))
-    monkeypatch.delenv("AUTH_USERNAME", raising=False)
-    monkeypatch.delenv("AUTH_PASSWORD", raising=False)
+    # Keep this regression independent from a developer's private .env overrides.
+    configure_auth(monkeypatch)
     get_settings.cache_clear()
 
     with TestClient(app) as client:

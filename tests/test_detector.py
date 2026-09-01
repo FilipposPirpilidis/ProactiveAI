@@ -117,6 +117,7 @@ async def test_conversate_mode_can_trigger_on_a_statement() -> None:
     assert result.intent == "fact_check"
     assert result.insight == "Correction: Canberra is the capital of Australia."
     assert "LATEST UTTERANCE (the only trigger):" in ollama.last_prompt
+    assert "Aim for about 150 characters" in ollama.last_prompt
     assert "I think Sydney is the capital of Australia." in ollama.last_prompt
 
 

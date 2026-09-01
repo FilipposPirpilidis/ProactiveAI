@@ -39,17 +39,19 @@ class PartialTranscriptAssembler:
 
     def __init__(self, max_characters: int = 8_000) -> None:
         self.max_characters = max_characters
-        self._texts: dict[str, str] = {}
+        # Providers may issue a fresh event ID for every partial revision. This
+        # object belongs to one WebSocket speech stream, so continuity must not
+        # depend on provider-specific event-ID behavior.
+        self._text = ""
 
     def update(self, message: TranscriptMessage) -> TranscriptMessage:
-        previous = self._texts.get(message.event_id, "")
-        merged = self._merge(previous, message.text)[-self.max_characters :]
-        self._texts[message.event_id] = merged
+        merged = self._merge(self._text, message.text)[-self.max_characters :]
+        self._text = merged
         return message.model_copy(update={"text": merged})
 
     def finalize(self, message: TranscriptMessage) -> TranscriptMessage:
         assembled = self.update(message)
-        self._texts.pop(message.event_id, None)
+        self._text = ""
         return assembled
 
     @staticmethod
