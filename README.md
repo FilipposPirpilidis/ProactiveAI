@@ -613,6 +613,21 @@ clues unless the role was directly stated. A name alone never triggers identific
 does not infer sensitive traits, personality, motives, family status, health, politics, or an exact
 job title unsupported by the transcript.
 
+### Session people memory
+
+In `conversate` mode, finalized transcripts can also build a small people map for the active session.
+For example, after hearing that Vincent conducted the technical interview and will provide final
+feedback, later mentions can use the qualified context that Vincent appears to be an interview or
+hiring contact. Repeated spellings/capitalization of the same name are grouped, and up to three recent
+supported observations per person are supplied to subsequent partial and final evaluations.
+
+Only evidence from finalized transcripts is persisted; observations inferred while a partial is still
+changing remain provisional. People memory is isolated by `session_id`, so starting a new session does
+not carry those people into an unrelated conversation. The data is stored in the existing SQLite
+database (`session_people`) and survives reconnects or container restarts when the configured data
+volume is retained. This feature does not identify someone from a name alone and does not build
+personality or sensitive-trait profiles.
+
 Insight cards aim for roughly 150 characters rather than a strict word count. A naturally complete
 short answer is allowed to be shorter, and clarity may use somewhat more space. Output is safely
 limited to 220 characters at a sentence or word boundary so unexpected model verbosity cannot

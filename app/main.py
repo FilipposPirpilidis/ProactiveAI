@@ -161,6 +161,16 @@ class PartialInsightWorker:
             )
             memories = await self.services.memory.relevant(self.client_id, conversation)
             memory_context = "\n".join(f"- {item.content}" for item in memories)
+            people_context = await self.services.memory.people_context(self.session_id)
+            if people_context:
+                memory_context = "\n".join(
+                    part
+                    for part in (
+                        memory_context,
+                        "Known people from this session:\n" + people_context,
+                    )
+                    if part
+                )
             detection = await self.services.detector.detect_conversation(
                 self.session_id,
                 conversation,
@@ -531,6 +541,16 @@ async def _process_final_transcript(
     await services.memory.store_transcript(session_id, transcript)
     memories = await services.memory.relevant(client_id, conversation)
     memory_context = "\n".join(f"- {item.content}" for item in memories)
+    people_context = await services.memory.people_context(session_id)
+    if people_context:
+        memory_context = "\n".join(
+            part
+            for part in (
+                memory_context,
+                "Known people from this session:\n" + people_context,
+            )
+            if part
+        )
     detection = await services.detector.detect_conversation(
         session_id,
         conversation,
@@ -539,6 +559,9 @@ async def _process_final_transcript(
         transcript.language,
         record_trigger=False,
     )
+    # Only finalized transcript evidence becomes durable session people memory.
+    # Partial observations can still produce a timely card, but remain provisional.
+    await services.memory.remember_people(session_id, detection.people)
     if not detection.should_trigger:
         await _send_ack(websocket, send_lock, transcript.event_id, False, detection.reason)
         return

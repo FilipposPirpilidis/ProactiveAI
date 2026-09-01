@@ -61,6 +61,21 @@ class EntityRoleOllama:
         )
 
 
+class PersonObservationOllama:
+    def __init__(self) -> None:
+        self.last_prompt = ""
+
+    async def chat(self, *args: object, **kwargs: object) -> str:
+        messages = args[0]
+        self.last_prompt = messages[0]["content"]  # type: ignore[index]
+        return (
+            '{"should_trigger":false,"confidence":0.86,'
+            '"reason":"useful for later but no card now","intent":"none","insight":null,'
+            '"people":[{"name":"Maya","summary":"owns the API rollout",'
+            '"confidence":0.9,"evidence":"Maya said she owns the API rollout"}]}'
+        )
+
+
 async def test_strong_question_triggers() -> None:
     detector = ProactiveDetector(UnusedOllama(), mode="heuristic", cooldown_seconds=0)  # type: ignore[arg-type]
 
@@ -187,6 +202,25 @@ async def test_conversate_can_infer_a_named_person_role_from_conversation_clues(
     assert result.insight is not None and "appears to be" in result.insight
     assert "Require at least two conversation-supported clues" in ollama.last_prompt
     assert "Never identify a person from a name alone" in ollama.last_prompt
+
+
+async def test_conversate_returns_people_memory_without_forcing_an_insight() -> None:
+    ollama = PersonObservationOllama()
+    detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=0)  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        "Maya said she owns the API rollout and will coordinate its release.",
+        "Maya said she owns the API rollout and will coordinate its release.",
+        memory_context="Known people from this session:\n- Maya: leads the API work",
+        language="en",
+    )
+
+    assert result.should_trigger is False
+    assert result.people[0].name == "Maya"
+    assert result.people[0].summary == "owns the API rollout"
+    assert "Independently of whether a card should trigger" in ollama.last_prompt
+    assert 'Set `people` to []' in ollama.last_prompt
 
 
 async def test_last_displayed_insight_is_included_to_prevent_stale_repeats() -> None:

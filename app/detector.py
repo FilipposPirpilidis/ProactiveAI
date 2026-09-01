@@ -212,6 +212,16 @@ class ProactiveDetector:
             "name alone or infer personality, competence, motives, age, health, family status, ethnicity, "
             "religion, politics, sexuality, or other sensitive traits. Stay silent if the role is already "
             "obvious, the evidence conflicts, or the clarification would not help the wearer follow along. "
+            "Independently of whether a card should trigger, return up to five evidence-backed named-person "
+            "observations in `people`. Extract only a human name actually spoken in the transcript. Each "
+            "observation must contain `name`, a short `summary` of an explicitly stated or carefully qualified "
+            "role/responsibility/relationship, `confidence`, and short `evidence` grounded in this conversation. "
+            "When Known people from this session are supplied, combine newly learned facts with them rather "
+            "than treating each mention as a new person. Do not create an observation for a name alone, infer "
+            "real-world identity from general knowledge, or store personality judgments, speculation, or any "
+            "sensitive trait. Set `people` to [] when there is no new reliable person information. Person "
+            "observations do not themselves require should_trigger=true; trigger `entity_context` only when a "
+            "new clarification is timely and materially useful on the glasses. "
             "Do not trigger for greetings, ordinary narration, generic advice, obvious restatements, "
             "speculation, incomplete speech, sensitive credentials, or when there is not enough context. "
             "Do not treat garbled or low-coherence speech as a factual claim. Do not label variable or "
@@ -231,7 +241,9 @@ class ProactiveDetector:
             "is false, set insight to null. Return JSON only: "
             '{"should_trigger":bool,"confidence":0..1,"reason":"short","intent":'
             '"context|entity_context|fact_check|definition|suggestion|question|reminder|task|decision|warning|none",'
-            '"insight":"display text or null"}.\n'
+            '"insight":"display text or null","people":['
+            '{"name":"spoken name","summary":"supported person context",'
+            '"confidence":0..1,"evidence":"conversation evidence"}]}.\n'
             "Available personal/meeting context:\n"
             + (memory_context or "None")
             + "\n\nAlready displayed insight (do not repeat):\n"

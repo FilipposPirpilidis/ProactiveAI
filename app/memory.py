@@ -1,10 +1,11 @@
 import re
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
 import aiosqlite
 
-from app.models import Insight, Memory, TranscriptMessage
+from app.models import Insight, Memory, PersonObservation, TranscriptMessage
 
 
 class MemoryEngine:
@@ -35,6 +36,15 @@ class MemoryEngine:
                 intent TEXT NOT NULL, confidence REAL NOT NULL, useful INTEGER,
                 created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS session_people (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL, name_key TEXT NOT NULL, name TEXT NOT NULL,
+                summary TEXT NOT NULL, confidence REAL NOT NULL, evidence TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(session_id, name_key, summary)
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_people_session_time
+                ON session_people(session_id, created_at);
             CREATE TABLE IF NOT EXISTS auth_tokens (
                 token_hash TEXT PRIMARY KEY, username TEXT NOT NULL,
                 created_at TEXT NOT NULL, expires_at TEXT NOT NULL
@@ -99,6 +109,76 @@ class MemoryEngine:
         )
         relevant = [row for row in ranked if terms & self._terms(row["content"])]
         return [Memory.model_validate(dict(row)) for row in relevant[: self.result_limit]]
+
+    async def remember_people(
+        self,
+        session_id: str,
+        observations: list[PersonObservation],
+        minimum_confidence: float = 0.65,
+    ) -> None:
+        """Persist evidence-backed named-person observations for one live session only."""
+        assert self._db
+        created_at = datetime.now(timezone.utc).isoformat()
+        rows = [
+            (
+                session_id,
+                self._person_key(item.name),
+                item.name,
+                item.summary,
+                item.confidence,
+                item.evidence,
+                created_at,
+            )
+            for item in observations
+            if item.confidence >= minimum_confidence and self._person_key(item.name)
+        ]
+        if not rows:
+            return
+        await self._db.executemany(
+            "INSERT OR IGNORE INTO session_people"
+            "(session_id, name_key, name, summary, confidence, evidence, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            rows,
+        )
+        await self._db.commit()
+
+    async def session_people(
+        self, session_id: str, limit: int = 30
+    ) -> list[PersonObservation]:
+        assert self._db
+        cursor = await self._db.execute(
+            "SELECT name, summary, confidence, evidence FROM session_people "
+            "WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            (session_id, limit),
+        )
+        return [PersonObservation.model_validate(dict(row)) for row in await cursor.fetchall()]
+
+    async def people_context(self, session_id: str, person_limit: int = 8) -> str:
+        """Group recent observations by normalized name for compact detector context."""
+        assert self._db
+        cursor = await self._db.execute(
+            "SELECT name_key, name, summary, confidence, evidence FROM session_people "
+            "WHERE session_id = ? ORDER BY created_at DESC, id DESC LIMIT 60",
+            (session_id,),
+        )
+        rows = await cursor.fetchall()
+        grouped: dict[str, dict[str, object]] = {}
+        for row in rows:
+            key = str(row["name_key"])
+            if key not in grouped:
+                if len(grouped) >= person_limit:
+                    continue
+                grouped[key] = {"name": str(row["name"]), "details": []}
+            details = grouped[key]["details"]
+            assert isinstance(details, list)
+            detail = str(row["summary"])
+            if detail not in details and len(details) < 3:
+                details.append(detail)
+        return "\n".join(
+            f"- {entry['name']}: {'; '.join(entry['details'])}"
+            for entry in grouped.values()
+            if entry["details"]
+        )
 
     async def store_insight(self, insight: Insight) -> None:
         assert self._db
@@ -173,3 +253,9 @@ class MemoryEngine:
     @staticmethod
     def _terms(text: str) -> set[str]:
         return {word for word in re.findall(r"\w{3,}", text.casefold())}
+
+    @staticmethod
+    def _person_key(name: str) -> str:
+        decomposed = unicodedata.normalize("NFKD", name.casefold())
+        without_marks = "".join(char for char in decomposed if not unicodedata.combining(char))
+        return " ".join(re.findall(r"\w+", without_marks))

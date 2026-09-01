@@ -37,12 +37,28 @@ class FeedbackMessage(BaseModel):
     useful: bool
 
 
+class PersonObservation(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    summary: str = Field(min_length=1, max_length=300)
+    confidence: float = Field(ge=0, le=1)
+    evidence: str = Field(min_length=1, max_length=500)
+
+    @field_validator("name", "summary", "evidence")
+    @classmethod
+    def clean_person_text(cls, value: str) -> str:
+        value = " ".join(value.split())
+        if not value:
+            raise ValueError("person fields must not be blank")
+        return value
+
+
 class Detection(BaseModel):
     should_trigger: bool
     confidence: float = Field(ge=0, le=1)
     reason: str
     intent: str = "none"
     insight: str | None = Field(default=None, max_length=500)
+    people: list[PersonObservation] = Field(default_factory=list, max_length=5)
 
 
 class Memory(BaseModel):

@@ -1,5 +1,5 @@
 from app.memory import MemoryEngine
-from app.models import Insight, TranscriptMessage
+from app.models import Insight, PersonObservation, TranscriptMessage
 
 
 async def test_retrieves_relevant_client_and_global_memories(tmp_path) -> None:
@@ -78,3 +78,50 @@ async def test_restores_latest_displayed_insight(tmp_path) -> None:
         assert await engine.latest_insight_text("other-chat") is None
     finally:
         await engine.close()
+
+
+async def test_people_memory_groups_names_and_is_isolated_by_session(tmp_path) -> None:
+    database_path = str(tmp_path / "memory.db")
+    engine = MemoryEngine(database_path)
+    await engine.initialize()
+    try:
+        await engine.remember_people(
+            "meeting-1",
+            [
+                PersonObservation(
+                    name="Víncent",
+                    summary="conducted the technical interview",
+                    confidence=0.9,
+                    evidence="Víncent ran my technical interview",
+                ),
+                PersonObservation(
+                    name="VINCENT",
+                    summary="will provide the final feedback",
+                    confidence=0.82,
+                    evidence="Vincent said he would send final feedback",
+                ),
+                PersonObservation(
+                    name="Alex",
+                    summary="may be involved",
+                    confidence=0.4,
+                    evidence="Alex was mentioned without a clear role",
+                ),
+            ],
+        )
+
+        context = await engine.people_context("meeting-1")
+
+        assert context.count("- VINCENT:") == 1
+        assert "conducted the technical interview" in context
+        assert "will provide the final feedback" in context
+        assert "Alex" not in context
+        assert await engine.people_context("meeting-2") == ""
+    finally:
+        await engine.close()
+
+    reopened = MemoryEngine(database_path)
+    await reopened.initialize()
+    try:
+        assert "VINCENT" in await reopened.people_context("meeting-1")
+    finally:
+        await reopened.close()
