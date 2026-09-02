@@ -117,5 +117,6 @@ class SessionAnalysisResponse(SessionAnalysisContent):
     transcript_count: int = Field(ge=0)
     analyzed_transcript_count: int = Field(ge=0)
     truncated: bool
+    included_partial_transcript: bool = False
     displayed_insights: list[StoredInsight] = Field(default_factory=list)
     generated_at: datetime = Field(default_factory=utc_now)

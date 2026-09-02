@@ -456,6 +456,24 @@ def test_signin_protects_http_and_signout_revokes_token(tmp_path, monkeypatch) -
     configure_auth(monkeypatch)
     get_settings.cache_clear()
 
+    with TestClient(app) as client:
+        invalid = client.post(
+            "/v1/auth/signin",
+            json={"username": "homebuddy", "password": "wrong"},
+        )
+        assert invalid.status_code == 401
+
+        token = sign_in(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        memory = {"client_id": "glasses-1", "kind": "fact", "content": "Test memory"}
+
+        assert client.post("/v1/memories", json=memory).status_code == 401
+        assert client.post("/v1/memories", json=memory, headers=headers).status_code == 201
+        assert client.post("/v1/auth/signout", headers=headers).json() == {"signed_out": True}
+        assert client.post("/v1/memories", json=memory, headers=headers).status_code == 401
+
+    get_settings.cache_clear()
+
 
 def test_active_session_analysis_uses_transcripts_and_displayed_insights(
     tmp_path, monkeypatch
@@ -502,6 +520,7 @@ def test_active_session_analysis_uses_transcripts_and_displayed_insights(
         assert body["transcript_count"] == 1
         assert body["analyzed_transcript_count"] == 1
         assert body["truncated"] is False
+        assert body["included_partial_transcript"] is False
         assert body["displayed_insights"][0]["intent"] == "fact_check"
         assert body["missed_insights"][0]["event_id"] == "meeting-event-1"
         assert analyzer.transcripts[0].event_id == "meeting-event-1"
@@ -518,24 +537,69 @@ def test_active_session_analysis_uses_transcripts_and_displayed_insights(
 
     get_settings.cache_clear()
 
-    with TestClient(app) as client:
-        invalid = client.post(
-            "/v1/auth/signin",
-            json={"username": "homebuddy", "password": "wrong"},
-        )
-        assert invalid.status_code == 401
 
-        token = sign_in(client)
-        headers = {"Authorization": f"Bearer {token}"}
-        memory = {"client_id": "glasses-1", "kind": "fact", "content": "Test memory"}
-
-        assert client.post("/v1/memories", json=memory).status_code == 401
-        assert client.post("/v1/memories", json=memory, headers=headers).status_code == 201
-        assert client.post("/v1/auth/signout", headers=headers).json() == {"signed_out": True}
-        assert client.post("/v1/memories", json=memory, headers=headers).status_code == 401
-
+def test_session_analysis_supports_partial_only_chat_after_disconnect(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "partial-analysis.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "heuristic")
+    configure_auth(monkeypatch)
     get_settings.cache_clear()
 
+    with TestClient(app) as client:
+        token = sign_in(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        analyzer = FakeSessionAnalyzer()
+        app.state.services.session_analyzer = analyzer
+
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=partial-meeting", headers=headers
+        ) as socket:
+            assert socket.receive_json()["type"] == "ready"
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "partial-event-1",
+                    "text": "Speaker 1: The meeting has only",
+                    "is_final": False,
+                    "speaker": "speaker-1",
+                    "language": "en",
+                }
+            )
+            assert socket.receive_json()["reason"] == "partial"
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "partial-event-2",
+                    "text": "Speaker 1: The meeting has only partial speech",
+                    "is_final": False,
+                    "speaker": "speaker-1",
+                    "language": "en",
+                }
+            )
+            assert socket.receive_json()["reason"] == "partial"
+
+            active_response = client.post(
+                "/v1/sessions/partial-meeting/analysis", headers=headers, json={}
+            )
+            assert active_response.status_code == 200
+            assert active_response.json()["included_partial_transcript"] is True
+
+        response = client.post(
+            "/v1/sessions/partial-meeting/analysis", headers=headers, json={}
+        )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["transcript_count"] == 1
+        assert body["analyzed_transcript_count"] == 1
+        assert body["truncated"] is False
+        assert body["included_partial_transcript"] is True
+        assert analyzer.transcripts[0].event_id == "partial-event-2"
+        assert analyzer.transcripts[0].is_final is False
+        assert analyzer.transcripts[0].text.endswith("partial speech")
+
+    get_settings.cache_clear()
 
 def test_signout_invalidates_an_open_websocket(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "websocket-auth.db"))

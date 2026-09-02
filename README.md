@@ -432,7 +432,7 @@ The server first sends:
 |---|---|---|
 | `type` | Yes | Must be `transcript` |
 | `text` | Yes | Non-empty text, maximum 8,000 characters |
-| `is_final` | No | Defaults to `true`; finals are stored, while partials can be evaluated only in `conversate` mode |
+| `is_final` | No | Defaults to `true`; finals are stored permanently, while only the newest assembled partial is checkpointed and partial insight evaluation runs in `conversate` mode |
 | `event_id` | No | Defaults to a UUID; a stable Soniox ID is recommended |
 | `speaker` | No | Speaker label, maximum 100 characters |
 | `language` | No | Language code such as `en` or `el` |
@@ -580,7 +580,7 @@ Signout deletes the token hash from SQLite. Future HTTP/WebSocket authentication
 ## Summarize and audit a conversation session
 
 While a chat WebSocket is open—or after it disconnects—an authenticated client can ask the local
-LLM to analyze the finalized transcript currently stored for that `session_id`:
+LLM to analyze the transcript currently stored for that `session_id`:
 
 ```bash
 curl -X POST http://PI_ADDRESS:18743/v1/sessions/SESSION_ID/analysis \
@@ -607,6 +607,7 @@ Example response shape:
   "transcript_count": 42,
   "analyzed_transcript_count": 42,
   "truncated": false,
+  "included_partial_transcript": true,
   "summary": "The speakers discussed...",
   "significant_parts": [
     {
@@ -630,8 +631,12 @@ Example response shape:
 }
 ```
 
-The endpoint analyzes a database snapshot and does not stop the WebSocket receive loop. Only final
-transcripts are included; partial speech is intentionally excluded because it can still change. If
+The endpoint analyzes a database snapshot and does not stop the WebSocket receive loop. It includes
+all stored final transcripts and, when speech has not finalized, the newest assembled partial as a
+clearly marked provisional transcript. The server replaces that checkpoint as Soniox revisions arrive
+(at most about once per second), flushes the newest version when the WebSocket disconnects, and removes
+it after a final transcript is safely stored. It does not save every partial revision. Check
+`included_partial_transcript` to tell whether provisional speech contributed to the analysis. If
 calling immediately after sending a final transcript, wait for that event's `ack` first. A missing or
 empty session returns `404`, invalid authentication returns `401`, and an unavailable or invalid LLM
 response returns `503`.
@@ -750,7 +755,7 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `TRANSCRIPT_WINDOW_SECONDS` | `90` | Rolling context age |
 | `TRANSCRIPT_MAX_ITEMS` | `40` | Rolling context item limit |
 | `MEMORY_RESULT_LIMIT` | `5` | Maximum retrieved memories |
-| `SESSION_ANALYSIS_MAX_CHARACTERS` | `60000` | Maximum finalized transcript characters sent to one session analysis; newest complete utterances are retained and `truncated` reports reduced coverage |
+| `SESSION_ANALYSIS_MAX_CHARACTERS` | `60000` | Maximum transcript characters sent to one session analysis; newest records are retained and `truncated` reports reduced coverage |
 | `DATABASE_PATH` | `/data/homebuddy.db` | SQLite database path |
 | `LOG_LEVEL` | `INFO` | Python log level |
 
@@ -765,12 +770,16 @@ docker compose up -d --force-recreate proactive-ai
 SQLite lives at `/data/homebuddy.db` in the `homebuddy-data` volume. It contains:
 
 - finalized transcripts;
+- the newest provisional partial per session, replaced as it changes and deleted after finalization;
 - explicit and automatically captured memories;
 - generated insights;
-- usefulness feedback.
+- usefulness feedback;
 - hashed, expiring authentication sessions.
 
-Partial transcripts are not persisted. Final transcripts are stored before proactive filtering, including speech later classified as noise or sensitive. Do not send speech unless the user has consented to storage.
+Every partial revision is not retained: only the latest assembled partial is checkpointed so a
+partial-only conversation can still be summarized. Final transcripts are stored before proactive
+filtering, including speech later classified as noise or sensitive. Do not send speech unless the
+user has consented to storage.
 
 The in-memory buffer defaults to 90 seconds and 40 utterances. SQLite records remain until deliberately removed.
 

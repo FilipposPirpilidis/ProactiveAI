@@ -48,6 +48,64 @@ async def test_restores_recent_session_transcripts(tmp_path) -> None:
         await engine.close()
 
 
+async def test_partial_snapshot_is_checkpointed_and_replaced_by_final(tmp_path) -> None:
+    database_path = str(tmp_path / "partial-memory.db")
+    engine = MemoryEngine(database_path)
+    await engine.initialize()
+    try:
+        await engine.update_partial(
+            "chat-partial",
+            TranscriptMessage(
+                event_id="partial-1",
+                text="This conversation has only provisional speech",
+                is_final=False,
+                language="en",
+            ),
+            checkpoint_interval_seconds=0,
+        )
+
+        snapshot, total, truncated, included_partial = await engine.transcript_snapshot(
+            "chat-partial", 10_000
+        )
+
+        assert total == 1
+        assert truncated is False
+        assert included_partial is True
+        assert snapshot[0].text == "This conversation has only provisional speech"
+        assert snapshot[0].is_final is False
+    finally:
+        await engine.close()
+
+    reopened = MemoryEngine(database_path)
+    await reopened.initialize()
+    try:
+        snapshot, total, truncated, included_partial = await reopened.transcript_snapshot(
+            "chat-partial", 10_000
+        )
+        assert (total, truncated, included_partial) == (1, False, True)
+        assert snapshot[0].event_id == "partial-1"
+
+        await reopened.store_transcript(
+            "chat-partial",
+            TranscriptMessage(
+                event_id="final-1",
+                text="This conversation now has finalized speech.",
+                is_final=True,
+                language="en",
+            ),
+        )
+        await reopened.clear_partial("chat-partial")
+
+        snapshot, total, truncated, included_partial = await reopened.transcript_snapshot(
+            "chat-partial", 10_000
+        )
+        assert (total, truncated, included_partial) == (1, False, False)
+        assert snapshot[0].event_id == "final-1"
+        assert snapshot[0].is_final is True
+    finally:
+        await reopened.close()
+
+
 async def test_restores_latest_displayed_insight(tmp_path) -> None:
     engine = MemoryEngine(str(tmp_path / "memory.db"))
     await engine.initialize()

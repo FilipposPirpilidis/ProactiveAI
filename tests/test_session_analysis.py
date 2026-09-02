@@ -51,9 +51,26 @@ async def test_session_analyzer_audits_transcript_against_existing_insights() ->
     assert result.summary == "A release was discussed."
     assert result.missed_insights == []
     assert '"event_id": "event-1"' in ollama.prompt
+    assert '"is_final": true' in ollama.prompt
     assert '"id": "insight-1"' in ollama.prompt
     assert "against every displayed\n   insight" in ollama.prompt
     assert ollama.kwargs == {"temperature": 0.1, "json_output": True}
+
+
+async def test_session_analyzer_marks_partial_speech_as_provisional() -> None:
+    ollama = AnalysisOllama(
+        '{"summary":"The speaker began discussing a release.","significant_parts":[],'
+        '"missed_insights":[],"assumptions":[]}'
+    )
+    analyzer = SessionAnalyzer(ollama)  # type: ignore[arg-type]
+
+    await analyzer.analyze(
+        [TranscriptMessage(event_id="partial-1", text="The release will", is_final=False)],
+        [],
+    )
+
+    assert '"is_final": false' in ollama.prompt
+    assert "latest provisional speech" in ollama.prompt
 
 
 async def test_session_analyzer_rejects_invalid_model_json() -> None:

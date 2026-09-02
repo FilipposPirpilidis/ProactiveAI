@@ -1,4 +1,5 @@
 import re
+import time
 import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +14,8 @@ class MemoryEngine:
         self.database_path = database_path
         self.result_limit = result_limit
         self._db: aiosqlite.Connection | None = None
+        self._partial_cache: dict[str, TranscriptMessage] = {}
+        self._partial_last_checkpoint: dict[str, float] = {}
 
     async def initialize(self) -> None:
         Path(self.database_path).parent.mkdir(parents=True, exist_ok=True)
@@ -27,6 +30,10 @@ class MemoryEngine:
             );
             CREATE INDEX IF NOT EXISTS idx_transcripts_session_time
                 ON transcripts(session_id, created_at);
+            CREATE TABLE IF NOT EXISTS partial_transcripts (
+                session_id TEXT PRIMARY KEY, event_id TEXT NOT NULL, speaker TEXT,
+                language TEXT, text TEXT NOT NULL, updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS memories (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL,
                 kind TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL
@@ -57,13 +64,73 @@ class MemoryEngine:
 
     async def close(self) -> None:
         if self._db:
+            for session_id in list(self._partial_cache):
+                await self.flush_partial(session_id)
             await self._db.close()
+            self._db = None
 
     async def store_transcript(self, session_id: str, message: TranscriptMessage) -> None:
         assert self._db
         await self._db.execute(
             "INSERT OR IGNORE INTO transcripts VALUES (?, ?, ?, ?, ?)",
             (message.event_id, session_id, message.speaker, message.text, message.timestamp.isoformat()),
+        )
+        await self._db.commit()
+
+    async def update_partial(
+        self,
+        session_id: str,
+        message: TranscriptMessage,
+        checkpoint_interval_seconds: float = 1.0,
+    ) -> None:
+        """Keep the newest assembled partial and periodically checkpoint only that revision."""
+        received_at = datetime.now(timezone.utc)
+        partial = message.model_copy(
+            update={"is_final": False, "timestamp": received_at}
+        )
+        self._partial_cache[session_id] = partial
+        now = time.monotonic()
+        last_checkpoint = self._partial_last_checkpoint.get(session_id)
+        if last_checkpoint is None or now - last_checkpoint >= checkpoint_interval_seconds:
+            await self._checkpoint_partial(session_id, partial)
+            self._partial_last_checkpoint[session_id] = now
+
+    async def flush_partial(self, session_id: str) -> None:
+        """Persist the latest partial before its WebSocket goes away."""
+        partial = self._partial_cache.pop(session_id, None)
+        self._partial_last_checkpoint.pop(session_id, None)
+        if partial is not None:
+            await self._checkpoint_partial(session_id, partial)
+
+    async def clear_partial(self, session_id: str) -> None:
+        """Remove provisional speech after its final transcript is safely stored."""
+        assert self._db
+        self._partial_cache.pop(session_id, None)
+        self._partial_last_checkpoint.pop(session_id, None)
+        await self._db.execute(
+            "DELETE FROM partial_transcripts WHERE session_id = ?", (session_id,)
+        )
+        await self._db.commit()
+
+    async def _checkpoint_partial(
+        self, session_id: str, partial: TranscriptMessage
+    ) -> None:
+        assert self._db
+        await self._db.execute(
+            "INSERT INTO partial_transcripts"
+            "(session_id, event_id, speaker, language, text, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "event_id=excluded.event_id, speaker=excluded.speaker, "
+            "language=excluded.language, text=excluded.text, updated_at=excluded.updated_at",
+            (
+                session_id,
+                partial.event_id,
+                partial.speaker,
+                partial.language,
+                partial.text,
+                partial.timestamp.isoformat(),
+            ),
         )
         await self._db.commit()
 
@@ -87,40 +154,66 @@ class MemoryEngine:
 
     async def transcript_snapshot(
         self, session_id: str, max_characters: int
-    ) -> tuple[list[TranscriptMessage], int, bool]:
-        """Return the newest complete utterances that fit the analysis input budget."""
+    ) -> tuple[list[TranscriptMessage], int, bool, bool]:
+        """Return the newest final utterances plus at most one provisional partial."""
         assert self._db
         count_cursor = await self._db.execute(
             "SELECT COUNT(*) AS total FROM transcripts WHERE session_id = ?", (session_id,)
         )
         count_row = await count_cursor.fetchone()
-        total = int(count_row["total"])
+        finalized_total = int(count_row["total"])
         cursor = await self._db.execute(
             "SELECT event_id, speaker, text, created_at FROM transcripts "
             "WHERE session_id = ? ORDER BY created_at DESC",
             (session_id,),
         )
-        selected: list[aiosqlite.Row] = []
-        used = 0
-        for row in await cursor.fetchall():
-            size = len(str(row["text"])) + len(str(row["speaker"] or "")) + 40
-            if selected and used + size > max_characters:
-                break
-            selected.append(row)
-            used += size
-            if used >= max_characters:
-                break
-        selected.reverse()
-        transcripts = [
+        final_transcripts = [
             TranscriptMessage(
                 event_id=row["event_id"],
                 speaker=row["speaker"],
                 text=row["text"],
                 timestamp=row["created_at"],
             )
-            for row in selected
+            for row in await cursor.fetchall()
         ]
-        return transcripts, total, len(transcripts) < total
+        partial = self._partial_cache.get(session_id)
+        if partial is None:
+            partial_cursor = await self._db.execute(
+                "SELECT event_id, speaker, language, text, updated_at "
+                "FROM partial_transcripts WHERE session_id = ?",
+                (session_id,),
+            )
+            partial_row = await partial_cursor.fetchone()
+            if partial_row:
+                partial = TranscriptMessage(
+                    event_id=partial_row["event_id"],
+                    speaker=partial_row["speaker"],
+                    language=partial_row["language"],
+                    text=partial_row["text"],
+                    timestamp=partial_row["updated_at"],
+                    is_final=False,
+                )
+
+        final_ids = {item.event_id for item in final_transcripts}
+        candidates = list(final_transcripts)
+        if partial is not None and partial.event_id not in final_ids:
+            candidates.append(partial)
+        candidates.sort(key=lambda item: item.timestamp, reverse=True)
+        total = finalized_total + int(partial is not None and partial.event_id not in final_ids)
+
+        selected: list[TranscriptMessage] = []
+        used = 0
+        for item in candidates:
+            size = len(item.text) + len(item.speaker or "") + 40
+            if selected and used + size > max_characters:
+                break
+            selected.append(item)
+            used += size
+            if used >= max_characters:
+                break
+        selected.reverse()
+        included_partial = any(not item.is_final for item in selected)
+        return selected, total, len(selected) < total, included_partial
 
     async def remember(self, session_id: str, kind: str, content: str) -> int:
         assert self._db

@@ -427,12 +427,12 @@ async def analyze_session(
     request: SessionAnalysisRequest | None = None,
 ) -> SessionAnalysisResponse:
     services: ServiceContainer = app.state.services
-    transcripts, total, truncated = await services.memory.transcript_snapshot(
+    transcripts, total, truncated, included_partial = await services.memory.transcript_snapshot(
         session_id,
         services.settings.session_analysis_max_characters,
     )
     if not transcripts:
-        raise HTTPException(status_code=404, detail="Session has no finalized transcripts")
+        raise HTTPException(status_code=404, detail="Session has no stored transcript")
     displayed_insights = await services.memory.session_insights(session_id)
     try:
         content = await services.session_analyzer.analyze(
@@ -447,6 +447,7 @@ async def analyze_session(
         transcript_count=total,
         analyzed_transcript_count=len(transcripts),
         truncated=truncated,
+        included_partial_transcript=included_partial,
         displayed_insights=displayed_insights,
         **content.model_dump(),
     )
@@ -543,6 +544,7 @@ async def websocket_endpoint(
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected client=%s session=%s", client_id, session_id)
     finally:
+        await services.memory.flush_partial(session_id)
         await partial_worker.close()
         await final_worker.close()
 
@@ -570,12 +572,18 @@ async def _handle_transcript(
                 "insight_may_follow": services.settings.detector_mode == "conversate",
             }
         )
+        assembled = partial_assembler.update(transcript)
+        await services.memory.update_partial(session_id, assembled)
         if services.settings.detector_mode == "conversate":
-            partial_worker.submit(partial_assembler.update(transcript))
+            partial_worker.submit(assembled)
         return
 
     partial_worker.cancel_pending()
     transcript = partial_assembler.finalize(transcript)
+    # Commit before queuing slower detector work. Clearing here cannot erase a
+    # partial from the next utterance because the receive loop has not advanced yet.
+    await services.memory.store_transcript(session_id, transcript)
+    await services.memory.clear_partial(session_id)
     buffer.add(transcript)
     final_worker.submit(transcript, buffer.latest_text(6))
 
@@ -590,7 +598,6 @@ async def _process_final_transcript(
     transcript: TranscriptMessage,
     conversation: str,
 ) -> None:
-    await services.memory.store_transcript(session_id, transcript)
     memories = await services.memory.relevant(client_id, conversation)
     memory_context = "\n".join(f"- {item.content}" for item in memories)
     people_context = await services.memory.people_context(session_id)
