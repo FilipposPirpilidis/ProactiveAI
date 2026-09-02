@@ -3,7 +3,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, WebSocket, WebSocketDisconnect, status
 from pydantic import BaseModel, Field, ValidationError
 
 from app.auth import AuthService
@@ -12,8 +12,15 @@ from app.config import Settings, get_settings
 from app.detector import ProactiveDetector
 from app.insights import InsightEngine, captured_insight_text, sanitize_insight_text
 from app.memory import MemoryEngine
-from app.models import FeedbackMessage, Insight, PingMessage, TranscriptMessage
+from app.models import (
+    FeedbackMessage,
+    Insight,
+    PingMessage,
+    SessionAnalysisResponse,
+    TranscriptMessage,
+)
 from app.ollama import OllamaClient, OllamaError
+from app.session_analysis import SessionAnalyzer
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +34,10 @@ class MemoryRequest(BaseModel):
 class SignInRequest(BaseModel):
     username: str = Field(min_length=1, max_length=100)
     password: str = Field(min_length=1, max_length=1_024)
+
+
+class SessionAnalysisRequest(BaseModel):
+    output_language: str | None = Field(default=None, min_length=2, max_length=20)
 
 
 class ServiceContainer:
@@ -55,6 +66,10 @@ class ServiceContainer:
         self.insights = InsightEngine(
             self.ollama,
             settings.insight_target_characters,
+            settings.insight_max_characters,
+        )
+        self.session_analyzer = SessionAnalyzer(
+            self.ollama,
             settings.insight_max_characters,
         )
 
@@ -398,6 +413,41 @@ async def add_memory(request: MemoryRequest) -> dict[str, int]:
     services: ServiceContainer = app.state.services
     memory_id = await services.memory.remember(request.client_id, request.kind, request.content)
     return {"id": memory_id}
+
+
+@app.post(
+    "/v1/sessions/{session_id}/analysis",
+    response_model=SessionAnalysisResponse,
+    dependencies=[Depends(require_http_token)],
+)
+async def analyze_session(
+    session_id: str = Path(min_length=1, max_length=100),
+    request: SessionAnalysisRequest | None = None,
+) -> SessionAnalysisResponse:
+    services: ServiceContainer = app.state.services
+    transcripts, total, truncated = await services.memory.transcript_snapshot(
+        session_id,
+        services.settings.session_analysis_max_characters,
+    )
+    if not transcripts:
+        raise HTTPException(status_code=404, detail="Session has no finalized transcripts")
+    displayed_insights = await services.memory.session_insights(session_id)
+    try:
+        content = await services.session_analyzer.analyze(
+            transcripts,
+            displayed_insights,
+            request.output_language if request else None,
+        )
+    except OllamaError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return SessionAnalysisResponse(
+        session_id=session_id,
+        transcript_count=total,
+        analyzed_transcript_count=len(transcripts),
+        truncated=truncated,
+        displayed_insights=displayed_insights,
+        **content.model_dump(),
+    )
 
 
 @app.websocket("/v1/ws")

@@ -76,3 +76,45 @@ class Insight(BaseModel):
     intent: str
     confidence: float
     created_at: datetime = Field(default_factory=utc_now)
+
+
+class StoredInsight(Insight):
+    useful: bool | None = None
+
+
+class SignificantConversationPart(BaseModel):
+    event_ids: list[str] = Field(default_factory=list, max_length=10)
+    description: str = Field(min_length=1, max_length=1_000)
+    significance: str = Field(min_length=1, max_length=1_000)
+
+
+class MissedInsightCandidate(BaseModel):
+    event_id: str = Field(min_length=1, max_length=200)
+    intent: str = Field(min_length=1, max_length=50)
+    suggested_insight: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=1_000)
+    confidence: float = Field(ge=0, le=1)
+
+
+class ConversationAssumption(BaseModel):
+    statement: str = Field(min_length=1, max_length=1_000)
+    evidence: str = Field(min_length=1, max_length=1_000)
+    confidence: float = Field(ge=0, le=1)
+
+
+class SessionAnalysisContent(BaseModel):
+    summary: str = Field(min_length=1, max_length=8_000)
+    significant_parts: list[SignificantConversationPart] = Field(
+        default_factory=list, max_length=30
+    )
+    missed_insights: list[MissedInsightCandidate] = Field(default_factory=list, max_length=30)
+    assumptions: list[ConversationAssumption] = Field(default_factory=list, max_length=30)
+
+
+class SessionAnalysisResponse(SessionAnalysisContent):
+    session_id: str
+    transcript_count: int = Field(ge=0)
+    analyzed_transcript_count: int = Field(ge=0)
+    truncated: bool
+    displayed_insights: list[StoredInsight] = Field(default_factory=list)
+    generated_at: datetime = Field(default_factory=utc_now)

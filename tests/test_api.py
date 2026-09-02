@@ -7,7 +7,14 @@ from starlette.websockets import WebSocketDisconnect
 
 from app.config import get_settings
 from app.main import app
-from app.models import Detection, Insight
+from app.models import (
+    ConversationAssumption,
+    Detection,
+    Insight,
+    MissedInsightCandidate,
+    SessionAnalysisContent,
+    SignificantConversationPart,
+)
 
 
 def configure_auth(monkeypatch) -> None:
@@ -60,6 +67,44 @@ class CombinedDetector:
 class ForbiddenInsightEngine:
     async def generate(self, *args: object, **kwargs: object) -> Insight:
         raise AssertionError("combined detection must not make a second model call")
+
+
+class FakeSessionAnalyzer:
+    def __init__(self) -> None:
+        self.transcripts = []
+        self.insights = []
+        self.output_language = None
+
+    async def analyze(self, transcripts, insights, output_language=None):
+        self.transcripts = transcripts
+        self.insights = insights
+        self.output_language = output_language
+        return SessionAnalysisContent(
+            summary="They discussed the capital of Australia.",
+            significant_parts=[
+                SignificantConversationPart(
+                    event_ids=[transcripts[0].event_id],
+                    description="A factual claim was made.",
+                    significance="It required a correction.",
+                )
+            ],
+            missed_insights=[
+                MissedInsightCandidate(
+                    event_id=transcripts[0].event_id,
+                    intent="definition",
+                    suggested_insight="Example retrospective candidate.",
+                    reason="A useful term could have been explained.",
+                    confidence=0.75,
+                )
+            ],
+            assumptions=[
+                ConversationAssumption(
+                    statement="The speakers were discussing geography.",
+                    evidence="They discussed Australia's capital.",
+                    confidence=0.9,
+                )
+            ],
+        )
 
 
 class SlowPartialDetector:
@@ -357,6 +402,68 @@ def test_slow_final_does_not_block_partial_inference(tmp_path, monkeypatch) -> N
 def test_signin_protects_http_and_signout_revokes_token(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "auth.db"))
     configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+
+def test_active_session_analysis_uses_transcripts_and_displayed_insights(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "analysis.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "conversate")
+    configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        token = sign_in(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        app.state.services.detector = CombinedDetector()
+        app.state.services.insights = ForbiddenInsightEngine()
+        analyzer = FakeSessionAnalyzer()
+        app.state.services.session_analyzer = analyzer
+
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=meeting-1", headers=headers
+        ) as socket:
+            assert socket.receive_json()["type"] == "ready"
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "meeting-event-1",
+                    "text": "Sydney is the capital of Australia.",
+                    "is_final": True,
+                    "speaker": "speaker-1",
+                    "language": "en",
+                }
+            )
+            assert socket.receive_json()["type"] == "ack"
+            assert socket.receive_json()["type"] == "insight"
+
+            response = client.post(
+                "/v1/sessions/meeting-1/analysis",
+                headers=headers,
+                json={"output_language": "en"},
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["session_id"] == "meeting-1"
+        assert body["transcript_count"] == 1
+        assert body["analyzed_transcript_count"] == 1
+        assert body["truncated"] is False
+        assert body["displayed_insights"][0]["intent"] == "fact_check"
+        assert body["missed_insights"][0]["event_id"] == "meeting-event-1"
+        assert analyzer.transcripts[0].event_id == "meeting-event-1"
+        assert analyzer.insights[0].text.startswith("Correction: Canberra")
+        assert analyzer.output_language == "en"
+
+        assert client.post("/v1/sessions/meeting-1/analysis").status_code == 401
+        assert (
+            client.post(
+                "/v1/sessions/unknown/analysis", headers=headers, json={}
+            ).status_code
+            == 404
+        )
+
     get_settings.cache_clear()
 
     with TestClient(app) as client:

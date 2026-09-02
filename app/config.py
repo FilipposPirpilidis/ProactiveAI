@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     insight_target_characters: int = Field(default=150, ge=40, le=500)
     insight_max_characters: int = Field(default=220, ge=80, le=1_000)
     memory_result_limit: int = 5
+    session_analysis_max_characters: int = Field(
+        default=60_000, ge=5_000, le=1_000_000
+    )
 
 
 @lru_cache

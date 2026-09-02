@@ -5,7 +5,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from app.models import Insight, Memory, PersonObservation, TranscriptMessage
+from app.models import Insight, Memory, PersonObservation, StoredInsight, TranscriptMessage
 
 
 class MemoryEngine:
@@ -84,6 +84,43 @@ class MemoryEngine:
             )
             for row in rows
         ]
+
+    async def transcript_snapshot(
+        self, session_id: str, max_characters: int
+    ) -> tuple[list[TranscriptMessage], int, bool]:
+        """Return the newest complete utterances that fit the analysis input budget."""
+        assert self._db
+        count_cursor = await self._db.execute(
+            "SELECT COUNT(*) AS total FROM transcripts WHERE session_id = ?", (session_id,)
+        )
+        count_row = await count_cursor.fetchone()
+        total = int(count_row["total"])
+        cursor = await self._db.execute(
+            "SELECT event_id, speaker, text, created_at FROM transcripts "
+            "WHERE session_id = ? ORDER BY created_at DESC",
+            (session_id,),
+        )
+        selected: list[aiosqlite.Row] = []
+        used = 0
+        for row in await cursor.fetchall():
+            size = len(str(row["text"])) + len(str(row["speaker"] or "")) + 40
+            if selected and used + size > max_characters:
+                break
+            selected.append(row)
+            used += size
+            if used >= max_characters:
+                break
+        selected.reverse()
+        transcripts = [
+            TranscriptMessage(
+                event_id=row["event_id"],
+                speaker=row["speaker"],
+                text=row["text"],
+                timestamp=row["created_at"],
+            )
+            for row in selected
+        ]
+        return transcripts, total, len(transcripts) < total
 
     async def remember(self, session_id: str, kind: str, content: str) -> int:
         assert self._db
@@ -207,6 +244,15 @@ class MemoryEngine:
         )
         rows = await cursor.fetchall()
         return [str(row["text"]) for row in reversed(rows)]
+
+    async def session_insights(self, session_id: str) -> list[StoredInsight]:
+        assert self._db
+        cursor = await self._db.execute(
+            "SELECT id, session_id, text, intent, confidence, useful, created_at "
+            "FROM insights WHERE session_id = ? ORDER BY created_at, id",
+            (session_id,),
+        )
+        return [StoredInsight.model_validate(dict(row)) for row in await cursor.fetchall()]
 
     async def record_feedback(self, insight_id: str, useful: bool) -> None:
         assert self._db

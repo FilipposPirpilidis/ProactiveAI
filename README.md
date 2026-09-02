@@ -577,6 +577,69 @@ curl -X POST http://PI_ADDRESS:18743/v1/auth/signout \
 
 Signout deletes the token hash from SQLite. Future HTTP/WebSocket authentication fails immediately. An already-open WebSocket checks the token before every incoming message and closes with policy code `1008` after revocation or expiry.
 
+## Summarize and audit a conversation session
+
+While a chat WebSocket is open—or after it disconnects—an authenticated client can ask the local
+LLM to analyze the finalized transcript currently stored for that `session_id`:
+
+```bash
+curl -X POST http://PI_ADDRESS:18743/v1/sessions/SESSION_ID/analysis \
+  -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -d '{"output_language":"en"}'
+```
+
+`output_language` is optional. If omitted, the model uses the conversation's dominant language.
+The response contains:
+
+- a concise summary;
+- significant moments with their transcript `event_id` values;
+- every insight that was actually displayed, including usefulness feedback when available;
+- conservative candidates for useful insights that may have been missed;
+- explicitly labeled assumptions with evidence and confidence;
+- transcript coverage counts and a `truncated` flag.
+
+Example response shape:
+
+```json
+{
+  "session_id": "chat-123",
+  "transcript_count": 42,
+  "analyzed_transcript_count": 42,
+  "truncated": false,
+  "summary": "The speakers discussed...",
+  "significant_parts": [
+    {
+      "event_ids": ["soniox-result-123"],
+      "description": "A delivery decision was made.",
+      "significance": "It assigns an owner and deadline."
+    }
+  ],
+  "displayed_insights": [],
+  "missed_insights": [
+    {
+      "event_id": "soniox-result-456",
+      "intent": "definition",
+      "suggested_insight": "RAG retrieves relevant documents before generating an answer.",
+      "reason": "The unexplained acronym was important to the discussion.",
+      "confidence": 0.84
+    }
+  ],
+  "assumptions": [],
+  "generated_at": "2026-09-02T10:00:00Z"
+}
+```
+
+The endpoint analyzes a database snapshot and does not stop the WebSocket receive loop. Only final
+transcripts are included; partial speech is intentionally excluded because it can still change. If
+calling immediately after sending a final transcript, wait for that event's `ack` first. A missing or
+empty session returns `404`, invalid authentication returns `401`, and an unavailable or invalid LLM
+response returns `503`.
+
+The retrospective missed-insight list is an LLM audit, not a guarantee that every candidate should
+have interrupted the wearer in real time. The prompt compares candidates semantically against all
+stored displayed insights and requires confidence of at least `0.70`.
+
 ## Add memories
 
 Reminder/task utterances that trigger are captured automatically. A trusted service can also add memory over HTTP:
@@ -678,6 +741,7 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `TRANSCRIPT_WINDOW_SECONDS` | `90` | Rolling context age |
 | `TRANSCRIPT_MAX_ITEMS` | `40` | Rolling context item limit |
 | `MEMORY_RESULT_LIMIT` | `5` | Maximum retrieved memories |
+| `SESSION_ANALYSIS_MAX_CHARACTERS` | `60000` | Maximum finalized transcript characters sent to one session analysis; newest complete utterances are retained and `truncated` reports reduced coverage |
 | `DATABASE_PATH` | `/data/homebuddy.db` | SQLite database path |
 | `LOG_LEVEL` | `INFO` | Python log level |
 
