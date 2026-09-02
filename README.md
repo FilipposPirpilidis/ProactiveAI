@@ -710,6 +710,15 @@ offering a practical alternative. The generated card answers the newest question
 transcript remains context only. Distinct questions on the same topic are not suppressed merely
 because their answers repeat place or subject names.
 
+In `conversate` mode, finalized conversational turns are also evaluated as question/answer or
+statement/response pairs. A short reply such as `108`, `yes`, or `no` is sent to the local model when
+it follows an objective question or comes from a different labeled speaker. If the reply is correct,
+the engine normally stays silent; if it is wrong, endorses an incorrect statement, or is materially
+misleading, it emits a `fact_check` correction. These corrections bypass ordinary repeated-card
+suppression because the new human response is a new reason to show the fact. Sensitive credentials
+are never evaluated this way, and unstable partial replies wait for the finalized transcript before
+verification.
+
 You can exercise this behavior with the included file scenario:
 
 ```bash

@@ -171,7 +171,7 @@ class PartialInsightWorker:
             # Keep enough rolling speech to connect a person's earlier name with
             # later clues about their role while bounding prompt size and latency.
             partial_context = self._tail_words(transcript.text, 220)
-            conversation = " ".join(
+            conversation = "\n".join(
                 part for part in (self.buffer.latest_text(5), partial_context) if part
             )
             memories = await self.services.memory.relevant(self.client_id, conversation)
@@ -194,6 +194,7 @@ class PartialInsightWorker:
                 transcript.language,
                 record_trigger=False,
                 cooldown_seconds=self.services.settings.partial_insight_cooldown_seconds,
+                verify_followup_answers=False,
             )
             logger.info(
                 "Partial evaluated session=%s event=%s revision=%d triggered=%s reason=%s",
@@ -240,6 +241,7 @@ class PartialInsightWorker:
                     or not self._compatible(transcript, current[1])
                     or (
                         detection.intent != "question"
+                        and not detection.answer_verification
                         and self.services.detector.is_repeated_insight(
                             self.session_id, insight.text
                         )
@@ -660,6 +662,7 @@ async def _process_final_transcript(
     async with insight_lock:
         if (
             detection.intent != "question"
+            and not detection.answer_verification
             and services.detector.is_repeated_insight(session_id, insight.text)
         ):
             await _send_ack(websocket, send_lock, transcript.event_id, False, "repeated_insight")

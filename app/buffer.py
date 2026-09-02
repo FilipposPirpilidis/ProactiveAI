@@ -27,7 +27,9 @@ class TranscriptBuffer:
 
     def latest_text(self, count: int = 3) -> str:
         self._prune()
-        return " ".join(item.text for item in list(self._items)[-count:])
+        # Preserve utterance boundaries so the detector can reason about a
+        # question followed by another speaker's possible answer.
+        return "\n".join(item.text for item in list(self._items)[-count:])
 
     def __len__(self) -> int:
         self._prune()

@@ -21,8 +21,8 @@ class ProactiveDetector:
     )
     _ignore_patterns = (
         r"^(um+|uh+|hmm+|okay|ok|yeah|yes|no|right|hello|hi)[.! ]*$",
-        r"\b(?:password|passcode|credit card|cvv|social security)\b",
     )
+    _sensitive_patterns = (r"\b(?:password|passcode|credit card|cvv|social security)\b",)
     _spoken_question_patterns = {
         "ar": (r"^(?:من|ماذا|لماذا|كيف|أين|متى|كم|هل|يمكنني|هل يمكن)\b",),
         "de": (r"^(?:wer|was|warum|wieso|wie|wo|wann|welch|kann ich|können wir|könnte ich|gibt es|ist es möglich)\b",),
@@ -89,15 +89,22 @@ class ProactiveDetector:
         language: str | None = None,
         record_trigger: bool = True,
         cooldown_seconds: float | None = None,
+        verify_followup_answers: bool = True,
     ) -> Detection:
         utterance_without_labels = re.sub(
             r"(?:^|\n)\s*speaker\s+\d+\s*:\s*", " ", latest_utterance, flags=re.IGNORECASE
         )
         normalized = " ".join(utterance_without_labels.lower().split())
         spoken_question = self._looks_like_spoken_question(normalized, language)
-        if (len(normalized) < 12 and not spoken_question) or any(
-            re.search(p, normalized) for p in self._ignore_patterns
-        ):
+        answer_verification = verify_followup_answers and self._follows_verifiable_turn(
+            conversation, latest_utterance, language
+        )
+        if any(re.search(pattern, normalized) for pattern in self._sensitive_patterns):
+            return Detection(should_trigger=False, confidence=0.98, reason="noise_or_sensitive")
+        if (
+            (len(normalized) < 12 and not spoken_question)
+            or any(re.search(pattern, normalized) for pattern in self._ignore_patterns)
+        ) and not answer_verification:
             return Detection(should_trigger=False, confidence=0.98, reason="noise_or_sensitive")
 
         word_count = len(normalized.split())
@@ -136,12 +143,15 @@ class ProactiveDetector:
                 intent=self._intent(normalized),
             )
         elif self.mode == "conversate" and (
-            word_count >= 4 or is_question or self._has_technical_reference(utterance_without_labels)
+            word_count >= 4
+            or is_question
+            or answer_verification
+            or self._has_technical_reference(utterance_without_labels)
         ):
             result = await self._classify_with_llm(
                 session_id, conversation, latest_utterance, memory_context, language
             )
-        elif self.mode == "hybrid" and score >= 0.25:
+        elif self.mode == "hybrid" and (score >= 0.25 or answer_verification):
             result = await self._classify_with_llm(
                 session_id, conversation, latest_utterance, memory_context, language
             )
@@ -149,6 +159,7 @@ class ProactiveDetector:
             result = Detection(should_trigger=False, confidence=1 - score, reason="no_actionable_signal")
 
         if result.should_trigger and result.confidence >= self.threshold:
+            result.answer_verification = answer_verification
             if cooldown_active and result.intent in {"context", "entity_context", "suggestion"}:
                 result.should_trigger = False
                 result.reason = "cooldown_low_priority"
@@ -183,6 +194,14 @@ class ProactiveDetector:
             "offer a practical alternative when supported. Answer that question—not an earlier topic. Questions that "
             "are subjective, interpersonal, or clearly addressed from one person to another should not "
             "trigger merely so the assistant can state an opinion or say it has no opinion. "
+            "When the latest utterance appears to answer an objective question or respond to a factual "
+            "statement in the immediately preceding conversation turn, verify the response using reliable "
+            "knowledge. A short reply, including a number or yes/no, still counts as a possible answer. "
+            "If it is correct and adequate, normally stay silent. If it is factually wrong, endorses a "
+            "wrong prior claim, or is materially misleading, trigger "
+            "with intent `fact_check` and give the corrected answer. If verification depends on missing, "
+            "current, personal, or uncertain information, do not guess. A correction may repeat the core "
+            "fact from an earlier assistant card because the latest human answer newly conflicts with it. "
             + language_instruction(language)
             + " "
             "Decide whether showing one short card NOW would add specific, timely value, even when "
@@ -243,7 +262,8 @@ class ProactiveDetector:
             '"context|entity_context|fact_check|definition|suggestion|question|reminder|task|decision|warning|none",'
             '"insight":"display text or null","people":['
             '{"name":"spoken name","summary":"supported person context",'
-            '"confidence":0..1,"evidence":"conversation evidence"}]}.\n'
+            '"confidence":0..1,"evidence":"conversation evidence"}],'
+            '"answer_verification":bool}.\n'
             "Available personal/meeting context:\n"
             + (memory_context or "None")
             + "\n\nAlready displayed insight (do not repeat):\n"
@@ -289,6 +309,45 @@ class ProactiveDetector:
             re.search(pattern, text, flags=re.IGNORECASE)
             for pattern in cls._spoken_question_patterns.get(code, ())
         )
+
+    @classmethod
+    def _follows_verifiable_turn(
+        cls, conversation: str, latest_utterance: str, language: str | None
+    ) -> bool:
+        turns = [turn.strip() for turn in conversation.splitlines() if turn.strip()]
+        if len(turns) < 2:
+            return False
+        latest = cls._without_speaker_label(latest_utterance)
+        final_turn = cls._without_speaker_label(turns[-1])
+        if latest and latest.casefold() != final_turn.casefold():
+            return False
+        prior_raw = turns[-2]
+        previous = cls._without_speaker_label(prior_raw).casefold()
+        previous_is_question = (
+            previous.endswith("?")
+            or (bool(language) and language.casefold().startswith("el") and previous.endswith(";"))
+            or cls._looks_like_spoken_question(previous, language)
+        )
+        prior_speaker = cls._speaker_label(prior_raw)
+        latest_speaker = cls._speaker_label(turns[-1])
+        different_speakers = bool(
+            prior_speaker and latest_speaker and prior_speaker != latest_speaker
+        )
+        return previous_is_question or different_speakers
+
+    @staticmethod
+    def _without_speaker_label(text: str) -> str:
+        return re.sub(
+            r"^\s*(?:(?:speaker\s+\d+)|(?:owner)|(?:unknown))\s*:\s*",
+            "",
+            text.strip(),
+            flags=re.IGNORECASE,
+        ).strip()
+
+    @staticmethod
+    def _speaker_label(text: str) -> str | None:
+        match = re.match(r"^\s*(speaker\s+\d+)\s*:", text, flags=re.IGNORECASE)
+        return " ".join(match.group(1).casefold().split()) if match else None
 
     @staticmethod
     def _similar_text(left: str, right: str) -> float:

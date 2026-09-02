@@ -17,6 +17,14 @@ def test_buffer_keeps_final_transcripts_only() -> None:
     assert buffer.text() == "user: final sentence"
 
 
+def test_latest_text_preserves_turn_boundaries() -> None:
+    buffer = TranscriptBuffer()
+    buffer.add(TranscriptMessage(text="What is 54 plus 54?", is_final=True))
+    buffer.add(TranscriptMessage(text="It is 109.", is_final=True))
+
+    assert buffer.latest_text(2) == "What is 54 plus 54?\nIt is 109."
+
+
 def test_buffer_prunes_old_transcripts() -> None:
     buffer = TranscriptBuffer(max_items=3, window_seconds=10)
     buffer.add(

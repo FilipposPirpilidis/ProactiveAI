@@ -76,6 +76,26 @@ class PersonObservationOllama:
         )
 
 
+class AnswerVerificationOllama:
+    def __init__(self, correct: bool) -> None:
+        self.correct = correct
+        self.last_prompt = ""
+
+    async def chat(self, *args: object, **kwargs: object) -> str:
+        messages = args[0]
+        self.last_prompt = messages[0]["content"]  # type: ignore[index]
+        if self.correct:
+            return (
+                '{"should_trigger":false,"confidence":0.95,"reason":"human answer is correct",'
+                '"intent":"none","insight":null,"people":[],"answer_verification":true}'
+            )
+        return (
+            '{"should_trigger":true,"confidence":0.99,"reason":"human answer is incorrect",'
+            '"intent":"fact_check","insight":"Correction: 54 + 54 is 108.",'
+            '"people":[],"answer_verification":true}'
+        )
+
+
 async def test_strong_question_triggers() -> None:
     detector = ProactiveDetector(UnusedOllama(), mode="heuristic", cooldown_seconds=0)  # type: ignore[arg-type]
 
@@ -221,6 +241,84 @@ async def test_conversate_returns_people_memory_without_forcing_an_insight() -> 
     assert result.people[0].summary == "owns the API rollout"
     assert "Independently of whether a card should trigger" in ollama.last_prompt
     assert 'Set `people` to []' in ollama.last_prompt
+
+
+async def test_short_answer_to_previous_question_is_checked_and_corrected() -> None:
+    ollama = AnswerVerificationOllama(correct=False)
+    detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=30)  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        "Speaker 1: What is 54 plus 54?\nSpeaker 2: 109.",
+        "Speaker 2: 109.",
+        language="en",
+    )
+
+    assert result.should_trigger is True
+    assert result.intent == "fact_check"
+    assert result.answer_verification is True
+    assert result.insight == "Correction: 54 + 54 is 108."
+    assert "immediately preceding conversation turn" in ollama.last_prompt
+    assert "including a number or yes/no" in ollama.last_prompt
+
+
+async def test_correct_answer_to_previous_question_stays_silent() -> None:
+    ollama = AnswerVerificationOllama(correct=True)
+    detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=30)  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        "Speaker 1: What is 54 plus 54?\nSpeaker 2: It is 108.",
+        "Speaker 2: It is 108.",
+        language="en",
+    )
+
+    assert result.should_trigger is False
+    assert result.reason == "human answer is correct"
+
+
+async def test_short_reply_to_other_speakers_factual_statement_is_checked() -> None:
+    ollama = AnswerVerificationOllama(correct=False)
+    detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=30)  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        "Speaker 1: Sydney is the capital of Australia.\nSpeaker 2: Yes.",
+        "Speaker 2: Yes.",
+        language="en",
+    )
+
+    assert result.should_trigger is True
+    assert result.answer_verification is True
+
+
+async def test_unstable_partial_answer_is_not_verified() -> None:
+    detector = ProactiveDetector(UnusedOllama(), mode="conversate")  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        "Speaker 1: What is 54 plus 54?\nSpeaker 2: 10",
+        "Speaker 2: 10",
+        language="en",
+        verify_followup_answers=False,
+    )
+
+    assert result.should_trigger is False
+    assert result.reason == "noise_or_sensitive"
+
+
+async def test_sensitive_answer_is_never_sent_for_verification() -> None:
+    detector = ProactiveDetector(UnusedOllama(), mode="conversate")  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        "Speaker 1: What is your password?\nSpeaker 2: My password is hunter two.",
+        "Speaker 2: My password is hunter two.",
+        language="en",
+    )
+
+    assert result.should_trigger is False
+    assert result.reason == "noise_or_sensitive"
 
 
 async def test_last_displayed_insight_is_included_to_prevent_stale_repeats() -> None:

@@ -59,6 +59,7 @@ class Detection(BaseModel):
     intent: str = "none"
     insight: str | None = Field(default=None, max_length=500)
     people: list[PersonObservation] = Field(default_factory=list, max_length=5)
+    answer_verification: bool = False
 
 
 class Memory(BaseModel):

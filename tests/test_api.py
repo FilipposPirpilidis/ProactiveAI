@@ -145,6 +145,21 @@ class SlowFinalFastPartialDetector(SlowPartialDetector):
         return await super().detect_conversation(*args, **kwargs)
 
 
+class RepeatedAnswerCorrectionDetector(CombinedDetector):
+    def is_repeated_insight(self, session_id: str, text: str) -> bool:
+        return True
+
+    async def detect_conversation(self, *args: object, **kwargs: object) -> Detection:
+        return Detection(
+            should_trigger=True,
+            confidence=0.99,
+            reason="answer to previous question is incorrect",
+            intent="fact_check",
+            insight="Correction: 54 + 54 is 108.",
+            answer_verification=True,
+        )
+
+
 def test_websocket_transcript_to_insight(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.db"))
     monkeypatch.setenv("DETECTOR_MODE", "heuristic")
@@ -192,6 +207,43 @@ def test_combined_detection_reuses_generated_insight(tmp_path, monkeypatch) -> N
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "combined.db"))
     monkeypatch.setenv("DETECTOR_MODE", "conversate")
     configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+
+def test_answer_correction_bypasses_repeated_insight_suppression(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "answer-verification.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "conversate")
+    configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        token = sign_in(client)
+        app.state.services.detector = RepeatedAnswerCorrectionDetector()
+        app.state.services.insights = ForbiddenInsightEngine()
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=answer-verification",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as socket:
+            socket.receive_json()
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "wrong-answer",
+                    "text": "Speaker 2: It is 109.",
+                    "is_final": True,
+                    "language": "en",
+                }
+            )
+
+            ack = socket.receive_json()
+            insight = socket.receive_json()
+
+            assert ack["triggered"] is True
+            assert insight["intent"] == "fact_check"
+            assert insight["text"] == "Correction: 54 + 54 is 108."
+
     get_settings.cache_clear()
 
 
