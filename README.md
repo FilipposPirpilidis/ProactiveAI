@@ -579,17 +579,16 @@ Signout deletes the token hash from SQLite. Future HTTP/WebSocket authentication
 
 ## Summarize and audit a conversation session
 
-While a chat WebSocket is open—or after it disconnects—an authenticated client can ask the local
-LLM to analyze the transcript currently stored for that `session_id`:
+When a chat WebSocket disconnects, the server starts a background LLM analysis and stores the result
+in SQLite. An authenticated client can then retrieve the prepared result by `session_id` without
+waiting for a new LLM request:
 
 ```bash
 curl -X POST http://PI_ADDRESS:18743/v1/sessions/SESSION_ID/analysis \
-  -H 'Content-Type: application/json' \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  -d '{"output_language":"en"}'
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-`output_language` is optional. If omitted, the model uses the conversation's dominant language.
+The analysis uses the conversation's dominant language because it is generated at disconnect time.
 The response contains:
 
 - a concise summary;
@@ -631,15 +630,18 @@ Example response shape:
 }
 ```
 
-The endpoint analyzes a database snapshot and does not stop the WebSocket receive loop. It includes
-all stored final transcripts and, when speech has not finalized, the newest assembled partial as a
-clearly marked provisional transcript. The server replaces that checkpoint as Soniox revisions arrive
-(at most about once per second), flushes the newest version when the WebSocket disconnects, and removes
-it after a final transcript is safely stored. It does not save every partial revision. Check
-`included_partial_transcript` to tell whether provisional speech contributed to the analysis. If
-calling immediately after sending a final transcript, wait for that event's `ack` first. A missing or
-empty session returns `404`, invalid authentication returns `401`, and an unavailable or invalid LLM
-response returns `503`.
+Generation begins only after the WebSocket disconnects and does not delay the disconnect itself. It
+includes all stored final transcripts and, when speech has not finalized, the newest assembled partial
+as a clearly marked provisional transcript. The server stores `processing`, `ready`, or `failed` state
+alongside the generated JSON in SQLite. While generation is running, the retrieval endpoint returns
+`409` with `Retry-After: 2` and `"Session analysis is still being generated; try again later"`. Retry
+after that delay. A session that has not disconnected or has no transcript/analysis returns `404`,
+invalid authentication returns `401`, and failed generation returns `503`. Check
+`included_partial_transcript` to tell whether provisional speech contributed to the analysis.
+
+Because the completed response is stored, later requests—including requests after a server restart—
+return the same prepared analysis immediately and do not call Ollama again. Disconnecting another
+WebSocket using the same `session_id` regenerates and replaces that session's stored analysis.
 
 The retrospective missed-insight list is an LLM audit, not a guarantee that every candidate should
 have interrupted the wearer in real time. The prompt compares candidates semantically against all
@@ -771,6 +773,7 @@ SQLite lives at `/data/homebuddy.db` in the `homebuddy-data` volume. It contains
 
 - finalized transcripts;
 - the newest provisional partial per session, replaced as it changes and deleted after finalization;
+- generated session analyses and their processing state;
 - explicit and automatically captured memories;
 - generated insights;
 - usefulness feedback;

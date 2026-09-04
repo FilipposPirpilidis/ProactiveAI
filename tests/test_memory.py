@@ -1,5 +1,5 @@
 from app.memory import MemoryEngine
-from app.models import Insight, PersonObservation, TranscriptMessage
+from app.models import Insight, PersonObservation, SessionAnalysisResponse, TranscriptMessage
 
 
 async def test_retrieves_relevant_client_and_global_memories(tmp_path) -> None:
@@ -136,6 +136,40 @@ async def test_restores_latest_displayed_insight(tmp_path) -> None:
         assert await engine.latest_insight_text("other-chat") is None
     finally:
         await engine.close()
+
+
+async def test_session_analysis_is_persisted_across_restart(tmp_path) -> None:
+    database_path = str(tmp_path / "analysis-memory.db")
+    engine = MemoryEngine(database_path)
+    await engine.initialize()
+    try:
+        await engine.mark_analysis_processing("meeting-1")
+        processing = await engine.session_analysis("meeting-1")
+        assert processing is not None
+        assert processing[0] == "processing"
+
+        await engine.store_session_analysis(
+            SessionAnalysisResponse(
+                session_id="meeting-1",
+                transcript_count=2,
+                analyzed_transcript_count=2,
+                truncated=False,
+                summary="A stored meeting summary.",
+            )
+        )
+    finally:
+        await engine.close()
+
+    reopened = MemoryEngine(database_path)
+    await reopened.initialize()
+    try:
+        stored = await reopened.session_analysis("meeting-1")
+        assert stored is not None
+        assert stored[0] == "ready"
+        assert stored[1] is not None
+        assert stored[1].summary == "A stored meeting summary."
+    finally:
+        await reopened.close()
 
 
 async def test_people_memory_groups_names_and_is_isolated_by_session(tmp_path) -> None:

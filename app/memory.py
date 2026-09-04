@@ -6,7 +6,14 @@ from pathlib import Path
 
 import aiosqlite
 
-from app.models import Insight, Memory, PersonObservation, StoredInsight, TranscriptMessage
+from app.models import (
+    Insight,
+    Memory,
+    PersonObservation,
+    SessionAnalysisResponse,
+    StoredInsight,
+    TranscriptMessage,
+)
 
 
 class MemoryEngine:
@@ -52,6 +59,14 @@ class MemoryEngine:
             );
             CREATE INDEX IF NOT EXISTS idx_session_people_session_time
                 ON session_people(session_id, created_at);
+            CREATE TABLE IF NOT EXISTS session_analyses (
+                session_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                payload TEXT,
+                error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
             CREATE TABLE IF NOT EXISTS auth_tokens (
                 token_hash TEXT PRIMARY KEY, username TEXT NOT NULL,
                 created_at TEXT NOT NULL, expires_at TEXT NOT NULL
@@ -59,6 +74,12 @@ class MemoryEngine:
             CREATE INDEX IF NOT EXISTS idx_auth_tokens_expiry
                 ON auth_tokens(expires_at);
             """
+        )
+        await self._db.execute(
+            "UPDATE session_analyses SET status='failed', payload=NULL, "
+            "error='Analysis generation was interrupted; reconnect and disconnect the chat to retry', "
+            "updated_at=? WHERE status='processing'",
+            (datetime.now(timezone.utc).isoformat(),),
         )
         await self._db.commit()
 
@@ -214,6 +235,54 @@ class MemoryEngine:
         selected.reverse()
         included_partial = any(not item.is_final for item in selected)
         return selected, total, len(selected) < total, included_partial
+
+    async def mark_analysis_processing(self, session_id: str) -> None:
+        assert self._db
+        now = datetime.now(timezone.utc).isoformat()
+        await self._db.execute(
+            "INSERT INTO session_analyses"
+            "(session_id, status, payload, error, created_at, updated_at) "
+            "VALUES (?, 'processing', NULL, NULL, ?, ?) "
+            "ON CONFLICT(session_id) DO UPDATE SET "
+            "status='processing', payload=NULL, error=NULL, updated_at=excluded.updated_at",
+            (session_id, now, now),
+        )
+        await self._db.commit()
+
+    async def store_session_analysis(self, analysis: SessionAnalysisResponse) -> None:
+        assert self._db
+        now = datetime.now(timezone.utc).isoformat()
+        await self._db.execute(
+            "UPDATE session_analyses SET status='ready', payload=?, error=NULL, updated_at=? "
+            "WHERE session_id=?",
+            (analysis.model_dump_json(), now, analysis.session_id),
+        )
+        await self._db.commit()
+
+    async def fail_session_analysis(self, session_id: str, error: str) -> None:
+        assert self._db
+        await self._db.execute(
+            "UPDATE session_analyses SET status='failed', payload=NULL, error=?, updated_at=? "
+            "WHERE session_id=?",
+            (error[:1_000], datetime.now(timezone.utc).isoformat(), session_id),
+        )
+        await self._db.commit()
+
+    async def session_analysis(
+        self, session_id: str
+    ) -> tuple[str, SessionAnalysisResponse | None, str | None] | None:
+        assert self._db
+        cursor = await self._db.execute(
+            "SELECT status, payload, error FROM session_analyses WHERE session_id=?",
+            (session_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        payload = str(row["payload"]) if row["payload"] is not None else None
+        analysis = SessionAnalysisResponse.model_validate_json(payload) if payload else None
+        error = str(row["error"]) if row["error"] is not None else None
+        return str(row["status"]), analysis, error
 
     async def remember(self, session_id: str, kind: str, content: str) -> int:
         assert self._db

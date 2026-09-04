@@ -107,6 +107,23 @@ class FakeSessionAnalyzer:
         )
 
 
+class SlowSessionAnalyzer(FakeSessionAnalyzer):
+    async def analyze(self, transcripts, insights, output_language=None):
+        await asyncio.sleep(0.15)
+        return await super().analyze(transcripts, insights, output_language)
+
+
+def wait_for_analysis(client: TestClient, session_id: str, headers: dict[str, str]):
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline:
+        response = client.post(f"/v1/sessions/{session_id}/analysis", headers=headers)
+        if response.status_code == 200:
+            return response
+        assert response.status_code in {404, 409}
+        time.sleep(0.01)
+    raise AssertionError("session analysis did not become ready")
+
+
 class SlowPartialDetector:
     def __init__(self) -> None:
         self.triggers: list[tuple[str, str]] = []
@@ -475,7 +492,7 @@ def test_signin_protects_http_and_signout_revokes_token(tmp_path, monkeypatch) -
     get_settings.cache_clear()
 
 
-def test_active_session_analysis_uses_transcripts_and_displayed_insights(
+def test_disconnected_session_analysis_uses_transcripts_and_displayed_insights(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "analysis.db"))
@@ -508,11 +525,14 @@ def test_active_session_analysis_uses_transcripts_and_displayed_insights(
             assert socket.receive_json()["type"] == "ack"
             assert socket.receive_json()["type"] == "insight"
 
-            response = client.post(
+            active_response = client.post(
                 "/v1/sessions/meeting-1/analysis",
                 headers=headers,
                 json={"output_language": "en"},
             )
+            assert active_response.status_code == 404
+            socket.close()
+            response = wait_for_analysis(client, "meeting-1", headers)
 
         assert response.status_code == 200
         body = response.json()
@@ -525,7 +545,7 @@ def test_active_session_analysis_uses_transcripts_and_displayed_insights(
         assert body["missed_insights"][0]["event_id"] == "meeting-event-1"
         assert analyzer.transcripts[0].event_id == "meeting-event-1"
         assert analyzer.insights[0].text.startswith("Correction: Canberra")
-        assert analyzer.output_language == "en"
+        assert analyzer.output_language is None
 
         assert client.post("/v1/sessions/meeting-1/analysis").status_code == 401
         assert (
@@ -582,12 +602,9 @@ def test_session_analysis_supports_partial_only_chat_after_disconnect(
             active_response = client.post(
                 "/v1/sessions/partial-meeting/analysis", headers=headers, json={}
             )
-            assert active_response.status_code == 200
-            assert active_response.json()["included_partial_transcript"] is True
-
-        response = client.post(
-            "/v1/sessions/partial-meeting/analysis", headers=headers, json={}
-        )
+            assert active_response.status_code == 404
+            socket.close()
+            response = wait_for_analysis(client, "partial-meeting", headers)
 
         assert response.status_code == 200
         body = response.json()
@@ -598,6 +615,53 @@ def test_session_analysis_supports_partial_only_chat_after_disconnect(
         assert analyzer.transcripts[0].event_id == "partial-event-2"
         assert analyzer.transcripts[0].is_final is False
         assert analyzer.transcripts[0].text.endswith("partial speech")
+
+    get_settings.cache_clear()
+
+
+def test_session_analysis_returns_try_later_while_background_job_runs(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "slow-analysis.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "heuristic")
+    configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        token = sign_in(client)
+        headers = {"Authorization": f"Bearer {token}"}
+        app.state.services.session_analyzer = SlowSessionAnalyzer()
+
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=slow-analysis", headers=headers
+        ) as socket:
+            assert socket.receive_json()["type"] == "ready"
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "partial-slow",
+                    "text": "This partial-only session needs a background analysis.",
+                    "is_final": False,
+                    "language": "en",
+                }
+            )
+            assert socket.receive_json()["reason"] == "partial"
+            socket.close()
+
+            deadline = time.monotonic() + 1
+            while True:
+                processing = client.post(
+                    "/v1/sessions/slow-analysis/analysis", headers=headers
+                )
+                if processing.status_code == 409:
+                    break
+                assert processing.status_code == 404
+                assert time.monotonic() < deadline
+                time.sleep(0.01)
+
+            assert processing.headers["retry-after"] == "2"
+            assert "try again later" in processing.json()["detail"]
+            assert wait_for_analysis(client, "slow-analysis", headers).status_code == 200
 
     get_settings.cache_clear()
 

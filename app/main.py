@@ -36,10 +36,6 @@ class SignInRequest(BaseModel):
     password: str = Field(min_length=1, max_length=1_024)
 
 
-class SessionAnalysisRequest(BaseModel):
-    output_language: str | None = Field(default=None, min_length=2, max_length=20)
-
-
 class ServiceContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
@@ -72,6 +68,11 @@ class ServiceContainer:
             self.ollama,
             settings.insight_max_characters,
         )
+        self.analysis_tasks: dict[str, asyncio.Task[None]] = {}
+
+    async def wait_for_analysis_tasks(self) -> None:
+        if self.analysis_tasks:
+            await asyncio.gather(*list(self.analysis_tasks.values()), return_exceptions=True)
 
 
 @asynccontextmanager
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await services.memory.initialize()
     app.state.services = services
     yield
+    await services.wait_for_analysis_tasks()
     await services.memory.close()
     await services.ollama.close()
 
@@ -424,33 +426,95 @@ async def add_memory(request: MemoryRequest) -> dict[str, int]:
 )
 async def analyze_session(
     session_id: str = Path(min_length=1, max_length=100),
-    request: SessionAnalysisRequest | None = None,
 ) -> SessionAnalysisResponse:
     services: ServiceContainer = app.state.services
-    transcripts, total, truncated, included_partial = await services.memory.transcript_snapshot(
-        session_id,
-        services.settings.session_analysis_max_characters,
+    stored = await services.memory.session_analysis(session_id)
+    if stored is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Session analysis is not available; disconnect the chat first",
+        )
+    analysis_status, analysis, error = stored
+    if analysis_status == "processing":
+        raise HTTPException(
+            status_code=409,
+            detail="Session analysis is still being generated; try again later",
+            headers={"Retry-After": "2"},
+        )
+    if analysis_status == "failed":
+        raise HTTPException(
+            status_code=503,
+            detail=error or "Session analysis generation failed",
+        )
+    if analysis is None:
+        raise HTTPException(status_code=503, detail="Stored session analysis is invalid")
+    return analysis
+
+
+async def _schedule_session_analysis(
+    services: ServiceContainer, session_id: str
+) -> None:
+    existing = services.analysis_tasks.get(session_id)
+    if existing and not existing.done():
+        return
+
+    transcripts, total, truncated, included_partial = (
+        await services.memory.transcript_snapshot(
+            session_id,
+            services.settings.session_analysis_max_characters,
+        )
     )
     if not transcripts:
-        raise HTTPException(status_code=404, detail="Session has no stored transcript")
-    displayed_insights = await services.memory.session_insights(session_id)
+        return
+
+    await services.memory.mark_analysis_processing(session_id)
+    task = asyncio.create_task(
+        _generate_session_analysis(
+            services,
+            session_id,
+            transcripts,
+            total,
+            truncated,
+            included_partial,
+        )
+    )
+    services.analysis_tasks[session_id] = task
+
+    def remove_finished(finished: asyncio.Task[None]) -> None:
+        if services.analysis_tasks.get(session_id) is finished:
+            services.analysis_tasks.pop(session_id, None)
+
+    task.add_done_callback(remove_finished)
+
+
+async def _generate_session_analysis(
+    services: ServiceContainer,
+    session_id: str,
+    transcripts: list[TranscriptMessage],
+    total: int,
+    truncated: bool,
+    included_partial: bool,
+) -> None:
     try:
+        displayed_insights = await services.memory.session_insights(session_id)
         content = await services.session_analyzer.analyze(
             transcripts,
             displayed_insights,
-            request.output_language if request else None,
         )
-    except OllamaError as exc:
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return SessionAnalysisResponse(
-        session_id=session_id,
-        transcript_count=total,
-        analyzed_transcript_count=len(transcripts),
-        truncated=truncated,
-        included_partial_transcript=included_partial,
-        displayed_insights=displayed_insights,
-        **content.model_dump(),
-    )
+        analysis = SessionAnalysisResponse(
+            session_id=session_id,
+            transcript_count=total,
+            analyzed_transcript_count=len(transcripts),
+            truncated=truncated,
+            included_partial_transcript=included_partial,
+            displayed_insights=displayed_insights,
+            **content.model_dump(),
+        )
+        await services.memory.store_session_analysis(analysis)
+        logger.info("Session analysis generated session=%s", session_id)
+    except Exception as exc:
+        logger.exception("Session analysis generation failed session=%s", session_id)
+        await services.memory.fail_session_analysis(session_id, str(exc))
 
 
 @app.websocket("/v1/ws")
@@ -547,6 +611,7 @@ async def websocket_endpoint(
         await services.memory.flush_partial(session_id)
         await partial_worker.close()
         await final_worker.close()
+        await _schedule_session_analysis(services, session_id)
 
 
 async def _handle_transcript(
