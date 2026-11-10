@@ -102,7 +102,7 @@ curl http://192.168.68.112:11434/api/tags
 
 Replace `192.168.68.112` with the Ollama machine's actual LAN address.
 
-The repository defaults to `qwen3.5:cloud`. That model may use Ollama's cloud service and is not fully offline. For local/offline operation, install a local model and configure its exact name.
+The repository defaults to `glm-5.3-flash:cloud`. That model uses Ollama's cloud service and is not fully offline. For local/offline operation, install a local model and configure its exact name.
 
 ## 2. Download and configure
 
@@ -116,7 +116,7 @@ Edit `.env`:
 
 ```dotenv
 OLLAMA_BASE_URL=http://192.168.68.112:11434
-OLLAMA_MODEL=qwen3.5:cloud
+OLLAMA_MODEL=glm-5.3-flash:cloud
 AUTH_USERNAME=homebuddy
 AUTH_PASSWORD=123456
 AUTH_TOKEN_TTL_SECONDS=86400
@@ -274,7 +274,7 @@ curl http://localhost:18743/ready
 ```
 
 ```json
-{"status":"ready","model":"qwen3.5:cloud"}
+{"status":"ready","model":"glm-5.3-flash:cloud"}
 ```
 
 `/health` only checks the API process. `/ready` returns HTTP `503` when authentication is explicitly left unconfigured or Ollama is unreachable.
@@ -406,7 +406,7 @@ The server first sends:
   "type": "ready",
   "client_id": "homebuddy-01",
   "session_id": "walk-2026-08-31",
-  "model": "qwen3.5:cloud",
+  "model": "glm-5.3-flash:cloud",
   "detector_mode": "conversate",
   "partial_insights": true,
   "partial_insight_debounce_ms": 400,
@@ -741,7 +741,7 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | Variable | Default | Purpose |
 |---|---|---|
 | `OLLAMA_BASE_URL` | `http://192.168.68.112:11434` | Ollama HTTP endpoint |
-| `OLLAMA_MODEL` | `qwen3.5:cloud` | Exact Ollama model name |
+| `OLLAMA_MODEL` | `glm-5.3-flash:cloud` | Exact Ollama model name |
 | `OLLAMA_TIMEOUT_SECONDS` | `45` | Model request timeout |
 | `AUTH_USERNAME` | `homebuddy` | Username accepted by the signin endpoint |
 | `AUTH_PASSWORD` | `123456` | Password accepted by the signin endpoint; change before deployment |

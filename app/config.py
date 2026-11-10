@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     auth_token_ttl_seconds: int = Field(default=86_400, ge=60, le=31_536_000)
 
     ollama_base_url: str = "http://192.168.68.112:11434"
-    ollama_model: str = "qwen3.5:cloud"
+    ollama_model: str = "glm-5.3-flash:cloud"
     ollama_timeout_seconds: float = 45.0
 
     database_path: str = "/data/homebuddy.db"
