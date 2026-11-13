@@ -492,6 +492,45 @@ def test_signin_protects_http_and_signout_revokes_token(tmp_path, monkeypatch) -
     get_settings.cache_clear()
 
 
+def test_static_token_protects_http_and_websocket_without_signin(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "static-token-api.db"))
+    monkeypatch.setenv("AUTH_USERNAME", "")
+    monkeypatch.setenv("AUTH_PASSWORD", "")
+    monkeypatch.setenv("AUTH_STATIC_TOKEN", "pre-shared-client-token")
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        headers = {"Authorization": "Bearer pre-shared-client-token"}
+        memory = {"client_id": "glasses-1", "kind": "fact", "content": "Test memory"}
+
+        assert client.post(
+            "/v1/auth/signin", json={"username": "x", "password": "x"}
+        ).status_code == 503
+        assert client.post("/v1/memories", json=memory).status_code == 401
+        assert client.post(
+            "/v1/memories",
+            json=memory,
+            headers={"Authorization": "Bearer wrong-token"},
+        ).status_code == 401
+        assert client.post("/v1/memories", json=memory, headers=headers).status_code == 201
+
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=static-auth", headers=headers
+        ) as socket:
+            assert socket.receive_json()["type"] == "ready"
+            socket.send_json({"type": "ping"})
+            assert socket.receive_json() == {"type": "pong"}
+
+        assert client.post("/v1/auth/signout", headers=headers).json() == {
+            "signed_out": False
+        }
+        assert client.post("/v1/memories", json=memory, headers=headers).status_code == 201
+
+    get_settings.cache_clear()
+
+
 def test_disconnected_session_analysis_uses_transcripts_and_displayed_insights(
     tmp_path, monkeypatch
 ) -> None:

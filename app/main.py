@@ -50,6 +50,7 @@ class ServiceContainer:
             settings.auth_username,
             settings.auth_password,
             settings.auth_token_ttl_seconds,
+            settings.auth_static_token,
         )
         self.detector = ProactiveDetector(
             self.ollama,
@@ -388,8 +389,11 @@ async def ready() -> dict[str, str]:
 @app.post("/v1/auth/signin")
 async def sign_in(request: SignInRequest) -> dict[str, str | int]:
     services: ServiceContainer = app.state.services
-    if not services.auth.configured:
-        raise HTTPException(status_code=503, detail="Authentication is not configured")
+    if not services.auth.password_signin_configured:
+        raise HTTPException(
+            status_code=503,
+            detail="Username/password sign-in is not configured",
+        )
     issued = await services.auth.sign_in(request.username, request.password)
     if not issued:
         raise HTTPException(
@@ -408,8 +412,7 @@ async def sign_in(request: SignInRequest) -> dict[str, str | int]:
 @app.post("/v1/auth/signout")
 async def sign_out(token: str = Depends(require_http_token)) -> dict[str, bool]:
     services: ServiceContainer = app.state.services
-    await services.auth.sign_out(token)
-    return {"signed_out": True}
+    return {"signed_out": await services.auth.sign_out(token)}
 
 
 @app.post("/v1/memories", dependencies=[Depends(require_http_token)], status_code=201)

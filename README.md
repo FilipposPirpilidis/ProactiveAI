@@ -18,13 +18,14 @@ The current implementation uses **SQLite, not Redis**. Runtime data persists in 
 
 ## Authentication at a glance
 
-Authentication is required for the WebSocket and all protected HTTP endpoints:
+Authentication is required for the WebSocket and all protected HTTP endpoints. A client can use
+either an issued session token or the optional pre-shared static token:
 
-1. Sign in with `POST http://PI_ADDRESS:18743/v1/auth/signin`.
-2. Read `access_token` from the JSON response.
-3. Open `ws://PI_ADDRESS:18743/v1/ws?client_id=CLIENT_ID&session_id=SESSION_ID`.
-4. Add `Authorization: Bearer ACCESS_TOKEN` to the WebSocket HTTP upgrade request.
-5. Sign out with `POST http://PI_ADDRESS:18743/v1/auth/signout`, using the same bearer header.
+1. Either sign in with `POST http://PI_ADDRESS:18743/v1/auth/signin` and read its
+   `access_token`, or configure `AUTH_STATIC_TOKEN` and use that value directly.
+2. Open `ws://PI_ADDRESS:18743/v1/ws?client_id=CLIENT_ID&session_id=SESSION_ID`.
+3. Add `Authorization: Bearer TOKEN` to the WebSocket HTTP upgrade request.
+4. Issued tokens can be revoked with `POST http://PI_ADDRESS:18743/v1/auth/signout`.
 
 The WebSocket does **not** accept the token as a URL query parameter. The server validates it at connection time and before every incoming message. Expired or revoked tokens close the WebSocket with policy code `1008`.
 
@@ -119,6 +120,7 @@ OLLAMA_BASE_URL=http://192.168.68.112:11434
 OLLAMA_MODEL=glm-5.3-flash:cloud
 AUTH_USERNAME=homebuddy
 AUTH_PASSWORD=123456
+AUTH_STATIC_TOKEN=
 AUTH_TOKEN_TTL_SECONDS=86400
 DETECTOR_MODE=conversate
 LOG_LEVEL=INFO
@@ -350,6 +352,10 @@ Changing `AUTH_USERNAME` or `AUTH_PASSWORD` in `.env` changes them for both the 
 
 ## Connect HomeBuddy
 
+HomeBuddy may authenticate by signing in or by using a pre-shared token. Sign-in is preferable for
+interactive clients because the issued token expires and can be revoked. The static token is useful
+for a trusted client that cannot implement the sign-in exchange.
+
 ### 1. Sign in
 
 Send the configured credentials over HTTPS (or trusted-LAN HTTP):
@@ -377,6 +383,30 @@ Successful response:
 Invalid credentials return HTTP `401`. Missing server credentials return HTTP `503`. Store the access token in the client's protected credential storage; never log it.
 
 Only a SHA-256 hash of the access token is stored by the server. Multiple sign-ins create independent sessions, and each token expires after `AUTH_TOKEN_TTL_SECONDS`.
+
+### Alternative: pre-shared bearer token
+
+Generate a separate high-entropy token on the deployment host:
+
+```bash
+openssl rand -hex 32
+```
+
+Store it only in `.env`:
+
+```dotenv
+AUTH_STATIC_TOKEN=PASTE_THE_GENERATED_VALUE_HERE
+```
+
+After recreating the service, the client can skip `/v1/auth/signin` and send that value directly:
+
+```text
+Authorization: Bearer PASTE_THE_GENERATED_VALUE_HERE
+```
+
+The configured value is compared by SHA-256 hash using a constant-time comparison. It is not placed
+in the SQLite authentication-session table, does not expire, and cannot be revoked through
+`/v1/auth/signout`. Rotate it in `.env` and recreate the container if it is exposed.
 
 ### 2. Open the conversation WebSocket
 
@@ -575,7 +605,10 @@ curl -X POST http://PI_ADDRESS:18743/v1/auth/signout \
 {"signed_out":true}
 ```
 
-Signout deletes the token hash from SQLite. Future HTTP/WebSocket authentication fails immediately. An already-open WebSocket checks the token before every incoming message and closes with policy code `1008` after revocation or expiry.
+For an issued token, signout deletes its hash from SQLite. Future HTTP/WebSocket authentication fails
+immediately, and an already-open WebSocket closes with policy code `1008` on its next message. A
+static token returns `{"signed_out":false}` because it remains valid until its environment value is
+rotated and the container is recreated.
 
 ## Summarize and audit a conversation session
 
@@ -745,6 +778,7 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `OLLAMA_TIMEOUT_SECONDS` | `45` | Model request timeout |
 | `AUTH_USERNAME` | `homebuddy` | Username accepted by the signin endpoint |
 | `AUTH_PASSWORD` | `123456` | Password accepted by the signin endpoint; change before deployment |
+| `AUTH_STATIC_TOKEN` | empty | Optional non-expiring pre-shared bearer token for clients that skip sign-in |
 | `AUTH_TOKEN_TTL_SECONDS` | `86400` | Issued-token lifetime; allowed range 60 seconds–365 days |
 | `DETECTOR_MODE` | `conversate` | `conversate`, `hybrid`, or `heuristic` |
 | `DETECTOR_THRESHOLD` | `0.62` | Minimum accepted trigger confidence |
@@ -803,13 +837,15 @@ Do not run `docker compose down -v` unless you intentionally want to delete the 
 ## Security
 
 - Replace the default `123456` with a strong `AUTH_PASSWORD` before deployment.
+- Generate `AUTH_STATIC_TOKEN` with at least 32 random bytes; never reuse another service's token.
 - Put HTTPS/WSS termination in front of port `18743` before internet exposure.
 - Never expose Ollama port `11434` publicly.
 - Restrict firewall access to trusted clients.
 - Treat transcripts and memories as private user data.
 - Protect `.env`; it is ignored by Git.
 - Never log credentials or issued access tokens.
-- Sign out and sign in again if an access token is exposed.
+- Sign out and sign in again if an issued access token is exposed. Rotate `AUTH_STATIC_TOKEN` in
+  `.env` and recreate the container if the static token is exposed.
 - The signin endpoint has no rate limiter yet; restrict network access at the firewall or reverse proxy.
 
 The container runs as an unprivileged `homebuddy` user, drops Linux capabilities, enables `no-new-privileges`, and writes state only to `/data`.
@@ -865,7 +901,7 @@ Latency is usually Ollama inference. Use a smaller local model, reduce model con
 
 ### Authentication fails
 
-The defaults are `homebuddy` / `123456`. If `.env` overrides either value, recreate both the API and simulator so they use the same pair. Sign in again if the token expired or was revoked. Both protected HTTP calls and WebSocket upgrade requests use `Authorization: Bearer YOUR_TOKEN`.
+The defaults are `homebuddy` / `123456`. If `.env` overrides either value, recreate both the API and simulator so they use the same pair. Sign in again if an issued token expired or was revoked. A configured `AUTH_STATIC_TOKEN` can be used directly and remains valid until it is rotated. Both protected HTTP calls and WebSocket upgrade requests use `Authorization: Bearer YOUR_TOKEN`.
 
 ## Local development and tests
 

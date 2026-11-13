@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     auth_username: str = "homebuddy"
     auth_password: str = "123456"
+    auth_static_token: str = ""
     auth_token_ttl_seconds: int = Field(default=86_400, ge=60, le=31_536_000)
 
     ollama_base_url: str = "http://192.168.68.112:11434"
