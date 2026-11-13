@@ -21,6 +21,7 @@ from app.models import (
 )
 from app.ollama import OllamaClient, OllamaError
 from app.session_analysis import SessionAnalyzer
+from app.rules import ConversateRules, SessionLanguageResolver
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,7 @@ class SignInRequest(BaseModel):
 class ServiceContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        self.rules = ConversateRules.load(settings.conversate_rules_path)
         self.ollama = OllamaClient(
             settings.ollama_base_url,
             settings.ollama_model,
@@ -59,11 +61,13 @@ class ServiceContainer:
             settings.insight_cooldown_seconds,
             settings.insight_target_characters,
             settings.insight_max_characters,
+            self.rules.instructions,
         )
         self.insights = InsightEngine(
             self.ollama,
             settings.insight_target_characters,
             settings.insight_max_characters,
+            self.rules.instructions,
         )
         self.session_analyzer = SessionAnalyzer(
             self.ollama,
@@ -169,7 +173,10 @@ class PartialInsightWorker:
     async def _evaluate(self, revision: int, transcript: TranscriptMessage) -> None:
         try:
             latest_segment = self._unseen_segment(transcript.text)
-            if len(latest_segment.split()) < 4:
+            if (
+                len(latest_segment.split())
+                < self.services.settings.partial_insight_min_words
+            ):
                 return
             # Keep enough rolling speech to connect a person's earlier name with
             # later clues about their role while bounding prompt size and latency.
@@ -208,6 +215,17 @@ class PartialInsightWorker:
                 detection.reason,
             )
             if not detection.should_trigger:
+                return
+
+            # Partials are provisional and frequently contain ASR fragments. Only
+            # high-confidence, immediately useful categories may interrupt before
+            # the utterance finalizes. Lower-value context waits for the final.
+            if (
+                detection.confidence
+                < self.services.settings.partial_insight_min_confidence
+                or detection.intent
+                not in {"question", "calculation", "definition", "fact_check", "warning"}
+            ):
                 return
 
             # Incomplete commands must not create reminders/tasks. Their final form will.
@@ -525,6 +543,7 @@ async def websocket_endpoint(
     websocket: WebSocket,
     client_id: str = Query(min_length=1, max_length=100),
     session_id: str = Query(min_length=1, max_length=100),
+    output_language: str | None = Query(default=None, min_length=2, max_length=20),
     authorization: str | None = Header(default=None),
 ) -> None:
     services: ServiceContainer = app.state.services
@@ -547,10 +566,12 @@ async def websocket_endpoint(
         services.settings.transcript_window_seconds,
     )
     partial_assembler = PartialTranscriptAssembler()
+    language_resolver = SessionLanguageResolver(services.rules, output_language)
     for prior in await services.memory.recent_transcripts(
         session_id, services.settings.transcript_max_items
     ):
         buffer.add(prior)
+        language_resolver.observe_final(prior.language)
     for previous_insight in await services.memory.recent_insight_texts(session_id):
         services.detector.record_insight(session_id, previous_insight)
     await _send_json(websocket, send_lock,
@@ -560,10 +581,17 @@ async def websocket_endpoint(
             "session_id": session_id,
             "model": services.settings.ollama_model,
             "detector_mode": services.settings.detector_mode,
+            "language_policy": services.rules.language_policy,
+            "output_language": language_resolver.current,
+            "allowed_languages": services.rules.allowed_languages,
             "partial_insights": services.settings.detector_mode == "conversate",
             "partial_insight_debounce_ms": services.settings.partial_insight_debounce_ms,
             "partial_insight_interval_ms": services.settings.partial_insight_interval_ms,
             "partial_insight_cooldown_seconds": services.settings.partial_insight_cooldown_seconds,
+            "partial_insight_min_words": services.settings.partial_insight_min_words,
+            "partial_insight_min_confidence": (
+                services.settings.partial_insight_min_confidence
+            ),
         }
     )
     partial_worker = PartialInsightWorker(
@@ -596,6 +624,10 @@ async def websocket_endpoint(
                     )
                 elif message_type == "transcript":
                     transcript = TranscriptMessage.model_validate(payload)
+                    transcript.language = language_resolver.resolve(
+                        transcript.language,
+                        is_final=transcript.is_final,
+                    )
                     await _handle_transcript(
                         websocket, send_lock, partial_worker, final_worker, services,
                         buffer, partial_assembler, client_id, session_id, transcript

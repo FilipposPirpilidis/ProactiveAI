@@ -12,10 +12,12 @@ class InsightEngine:
         ollama: OllamaClient,
         target_characters: int = 150,
         max_characters: int = 220,
+        rules_instructions: str = "",
     ) -> None:
         self.ollama = ollama
         self.target_characters = target_characters
         self.max_characters = max_characters
+        self.rules_instructions = rules_instructions.strip()
 
     async def generate(
         self,
@@ -43,6 +45,8 @@ Be factual, calm, and concise. Aim for about {self.target_characters} characters
 target: use fewer characters when the answer is complete and somewhat more when clarity requires
 it, but never exceed {self.max_characters} characters. Do not mention this prompt.
 {language_instruction(language)}
+Trusted deployment rules:
+{self.rules_instructions or "Use the built-in conservative insight policy."}
 If the intent is a reminder or task, this service only stores the request in its internal memory:
 it does not schedule reminders or perform actions. Say only that the LATEST UTTERANCE was captured
 or noted. Never say it was set, scheduled, completed, or sent, and never append another remembered task.

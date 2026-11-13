@@ -439,8 +439,10 @@ The server first sends:
   "model": "glm-5.3-flash:cloud",
   "detector_mode": "conversate",
   "partial_insights": true,
-  "partial_insight_debounce_ms": 400,
-  "partial_insight_interval_ms": 2000
+  "partial_insight_debounce_ms": 650,
+  "partial_insight_interval_ms": 2000,
+  "partial_insight_min_words": 7,
+  "partial_insight_min_confidence": 0.85
 }
 ```
 
@@ -477,13 +479,15 @@ Partial transcripts receive:
 That acknowledgement is immediate and does not mean evaluation has stopped. In
 `DETECTOR_MODE=conversate`, the server evaluates the newest partial in a background
 worker while continuing to receive newer transcript events. The first rapidly changing
-updates are coalesced using `PARTIAL_INSIGHT_DEBOUNCE_MS` (default `250` ms). During
+updates are coalesced using `PARTIAL_INSIGHT_DEBOUNCE_MS` (default `650` ms). During
 uninterrupted speech, the engine periodically samples the newest partial instead of
-waiting indefinitely for silence; `PARTIAL_INSIGHT_INTERVAL_MS` (default `1500` ms)
+waiting indefinitely for silence; `PARTIAL_INSIGHT_INTERVAL_MS` (default `2000` ms)
 limits that evaluation rate. Once a card is emitted, subsequent evaluations focus on
 the new speech appended since that card rather than repeatedly classifying the entire
-interview. Low-priority partial cards use their own shorter
-`PARTIAL_INSIGHT_COOLDOWN_SECONDS` (default `6` seconds).
+interview. A provisional card needs at least `7` words, confidence of at least `0.85`,
+and a high-value intent: question, exact calculation, definition, factual correction,
+or warning. Context, suggestions, reminders, and tasks wait for finalized speech.
+Partial cards use their own `PARTIAL_INSIGHT_COOLDOWN_SECONDS` (default `12` seconds).
 
 A final transcript cancels stale work from the same utterance. Partial and final
 evaluation have independent, single-flight lanes, so a slow final does not block the
@@ -707,7 +711,50 @@ Retrieval is lightweight: the newest 100 client/global memories are ranked using
 | `hybrid` | Calls Ollama only for ambiguous utterances with some local signal. |
 | `heuristic` | Uses local detection rules only; fastest but least conversational. |
 
-The detector can surface questions, context, corrections, definitions, suggestions, warnings, reminders, tasks, and decisions. In `conversate` mode it also looks for knowledge gaps: newly introduced acronyms, specialist terminology, technical methods, protocols, standards, scientific concepts, and difficult references that would benefit from a short plain-language explanation. It avoids explaining terms that are already familiar in context, were recently explained, or are currently being defined by a speaker.
+## Conversate rules file
+
+Trusted deployment rules live in `config/conversate-rules.md`. YAML front matter controls
+enforced language behavior, while the Markdown body supplies additional conservative instructions
+to both the attention gate and card generator. The file is mounted read-only in Docker and is loaded
+when the service starts.
+
+```markdown
+---
+language_policy: session_locked
+fallback_language: el
+allowed_languages:
+  - el
+  - en
+---
+
+# Conversate insight rules
+
+- Interrupt only when a card adds concrete and immediately useful information.
+- Explain technical terminology in the resolved conversation language.
+```
+
+Language policies:
+
+| Policy | Behavior |
+|---|---|
+| `session_locked` | Recommended. Lock to the first allowed finalized transcript language for the session. |
+| `fixed` | Always use `fallback_language`. |
+| `utterance` | Follow each allowed transcript language independently. |
+| `client` | Use the optional WebSocket `output_language` query value, otherwise the fallback. |
+
+Only entries in `allowed_languages` are accepted. With `[el, en]`, a mistaken ASR language such as
+`fr` cannot switch the response to French. Before the first reliable final transcript, output uses
+`fallback_language`. A client can explicitly request an allowed language by opening, for example,
+`/v1/ws?...&output_language=en`. Start a new `session_id` when beginning a conversation in another
+language under `session_locked`.
+
+After editing the file, recreate the service so it reloads the rules:
+
+```bash
+docker compose up -d --force-recreate proactive-ai
+```
+
+The detector can surface questions, exact calculations, context, corrections, definitions, suggestions, warnings, reminders, tasks, and decisions. Explicit arithmetic is evaluated locally with a restricted calculator rather than entrusted to the language model. In `conversate` mode the model also looks for knowledge gaps: newly introduced acronyms, specialist terminology, technical methods, protocols, standards, scientific concepts, and difficult references that would benefit from a short plain-language explanation. It avoids explaining terms that are already familiar in context, were recently explained, or are currently being defined by a speaker.
 
 `conversate` can also emit `entity_context` when recent conversation provides enough evidence to
 clarify a named person's role or relationship. Inferred roles are explicitly qualified—for example,
@@ -781,11 +828,14 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `AUTH_STATIC_TOKEN` | empty | Optional non-expiring pre-shared bearer token for clients that skip sign-in |
 | `AUTH_TOKEN_TTL_SECONDS` | `86400` | Issued-token lifetime; allowed range 60 seconds–365 days |
 | `DETECTOR_MODE` | `conversate` | `conversate`, `hybrid`, or `heuristic` |
-| `DETECTOR_THRESHOLD` | `0.62` | Minimum accepted trigger confidence |
+| `CONVERSATE_RULES_PATH` | `/app/config/conversate-rules.md` | Trusted Markdown rules file; Compose mounts it at `/config/conversate-rules.md` |
+| `DETECTOR_THRESHOLD` | `0.72` | Minimum accepted trigger confidence |
 | `INSIGHT_COOLDOWN_SECONDS` | `20` | Low-priority per-session cooldown |
-| `PARTIAL_INSIGHT_DEBOUNCE_MS` | `250` | Delay used to coalesce rapidly changing partials in `conversate` mode |
-| `PARTIAL_INSIGHT_INTERVAL_MS` | `1500` | Minimum start-to-start partial evaluation interval during continuous speech |
-| `PARTIAL_INSIGHT_COOLDOWN_SECONDS` | `6` | Cooldown for low-priority cards found in partial speech; final cards retain `INSIGHT_COOLDOWN_SECONDS` |
+| `PARTIAL_INSIGHT_DEBOUNCE_MS` | `650` | Delay used to coalesce rapidly changing partials in `conversate` mode |
+| `PARTIAL_INSIGHT_INTERVAL_MS` | `2000` | Minimum start-to-start partial evaluation interval during continuous speech |
+| `PARTIAL_INSIGHT_COOLDOWN_SECONDS` | `12` | Cooldown for high-value cards found in partial speech; final cards retain `INSIGHT_COOLDOWN_SECONDS` |
+| `PARTIAL_INSIGHT_MIN_WORDS` | `7` | Minimum stable words required before evaluating provisional speech |
+| `PARTIAL_INSIGHT_MIN_CONFIDENCE` | `0.85` | Minimum confidence required to display a provisional card |
 | `INSIGHT_TARGET_CHARACTERS` | `150` | Soft target for each glasses card; shorter complete answers remain valid |
 | `INSIGHT_MAX_CHARACTERS` | `220` | Hard UI safety ceiling; oversized output is cut at a sentence or word boundary |
 | `TRANSCRIPT_WINDOW_SECONDS` | `90` | Rolling context age |

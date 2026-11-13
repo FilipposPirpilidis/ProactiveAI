@@ -4,6 +4,7 @@ import unicodedata
 from collections import deque
 from datetime import datetime, timedelta, timezone
 
+from app.calculations import calculate_spoken_expression
 from app.languages import language_instruction
 from app.models import Detection
 from app.ollama import OllamaClient, OllamaError
@@ -47,6 +48,7 @@ class ProactiveDetector:
         cooldown_seconds: int = 20,
         insight_target_characters: int = 150,
         insight_max_characters: int = 220,
+        rules_instructions: str = "",
     ) -> None:
         self.ollama = ollama
         self.mode = mode
@@ -54,6 +56,7 @@ class ProactiveDetector:
         self.cooldown = timedelta(seconds=cooldown_seconds)
         self.insight_target_characters = insight_target_characters
         self.insight_max_characters = insight_max_characters
+        self.rules_instructions = rules_instructions.strip()
         self._last_trigger: dict[str, tuple[datetime, str]] = {}
         self._recent_insights: dict[str, deque[str]] = {}
 
@@ -106,6 +109,20 @@ class ProactiveDetector:
             or any(re.search(pattern, normalized) for pattern in self._ignore_patterns)
         ) and not answer_verification:
             return Detection(should_trigger=False, confidence=0.98, reason="noise_or_sensitive")
+
+        calculation = calculate_spoken_expression(utterance_without_labels)
+        if calculation is not None:
+            expression, result = calculation
+            detection = Detection(
+                should_trigger=True,
+                confidence=0.99,
+                reason="deterministic_calculation",
+                intent="calculation",
+                insight=f"{expression} = {result}",
+            )
+            if record_trigger:
+                self.record_trigger(session_id, normalized)
+            return detection
 
         word_count = len(normalized.split())
         is_question = normalized.endswith("?") or (
@@ -204,11 +221,23 @@ class ProactiveDetector:
             "fact from an earlier assistant card because the latest human answer newly conflicts with it. "
             + language_instruction(language)
             + " "
-            "Decide whether showing one short card NOW would add specific, timely value, even when "
+            + (
+                "Trusted deployment rules:\n" + self.rules_instructions + "\n"
+                if self.rules_instructions
+                else ""
+            )
+            + "Decide whether showing one short card NOW would add specific, timely value, even when "
             "nobody asked a question. Trigger for: a useful fact or background detail directly related "
             "to the current topic; correction of a likely factual error; explanation of a term or entity; "
             "a relevant fact from the supplied personal/meeting context; a concrete next step or response "
             "suggestion; a warning, deadline, reminder, task, decision aid, or explicit question. "
+            "Apply this interruption test before triggering: the card must either answer a real "
+            "question, prevent a material misunderstanding, explain a newly important specialist "
+            "term, provide a concrete calculation, or give a specific fact or next step that changes "
+            "what the wearer understands or can do now. Otherwise stay silent. A paraphrase, summary, "
+            "generic caution, conversational commentary, or restatement of the latest words is not "
+            "added value. Fragmentary narration such as `the agents leaked` or `the story says roughly` "
+            "must not trigger without enough context for a concrete and reliable addition. "
             "Also proactively trigger when the latest utterance newly introduces an acronym, "
             "specialist term, named technical method, protocol, standard, scientific concept, or "
             "difficult reference that a knowledgeable non-expert may not understand and a plain "
@@ -259,7 +288,7 @@ class ProactiveDetector:
             "scheduled, completed, or sent, and never append an unrelated remembered task. If should_trigger "
             "is false, set insight to null. Return JSON only: "
             '{"should_trigger":bool,"confidence":0..1,"reason":"short","intent":'
-            '"context|entity_context|fact_check|definition|suggestion|question|reminder|task|decision|warning|none",'
+            '"context|entity_context|fact_check|definition|calculation|suggestion|question|reminder|task|decision|warning|none",'
             '"insight":"display text or null","people":['
             '{"name":"spoken name","summary":"supported person context",'
             '"confidence":0..1,"evidence":"conversation evidence"}],'

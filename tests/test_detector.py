@@ -115,6 +115,35 @@ async def test_explicit_question_is_high_priority_in_heuristic_mode() -> None:
     assert result.reason == "strong_local_signal"
 
 
+async def test_spoken_calculation_is_exact_without_calling_ollama() -> None:
+    detector = ProactiveDetector(UnusedOllama(), mode="conversate")  # type: ignore[arg-type]
+
+    result = await detector.detect("session-1", "What is 54 plus 54?")
+
+    assert result.should_trigger is True
+    assert result.intent == "calculation"
+    assert result.confidence == 0.99
+    assert result.insight == "54 + 54 = 108"
+
+
+async def test_greek_spoken_calculation_is_exact_without_calling_ollama() -> None:
+    detector = ProactiveDetector(UnusedOllama(), mode="conversate")  # type: ignore[arg-type]
+
+    result = await detector.detect("session-1", "Πόσο κάνει 12 επί 4;")
+
+    assert result.should_trigger is True
+    assert result.intent == "calculation"
+    assert result.insight == "12 * 4 = 48"
+
+
+async def test_date_is_not_mistaken_for_a_calculation() -> None:
+    detector = ProactiveDetector(UnusedOllama(), mode="heuristic")  # type: ignore[arg-type]
+
+    result = await detector.detect("session-1", "The meeting is on 2026-11-13")
+
+    assert result.should_trigger is False
+
+
 async def test_spoken_question_without_punctuation_is_detected() -> None:
     detector = ProactiveDetector(UnusedOllama(), mode="heuristic")  # type: ignore[arg-type]
 

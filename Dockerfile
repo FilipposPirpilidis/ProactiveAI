@@ -11,6 +11,7 @@ RUN groupadd --system homebuddy && useradd --system --gid homebuddy homebuddy \
 
 COPY pyproject.toml ./
 COPY app ./app
+COPY config ./config
 COPY scripts ./scripts
 COPY simulator-input /input
 RUN pip install --upgrade pip && pip install .
