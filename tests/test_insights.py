@@ -88,6 +88,32 @@ async def test_definition_prompt_uses_structured_subject_and_source() -> None:
     assert "begin with the exact subject" in prompt
 
 
+async def test_knowledge_gap_prompt_requests_a_direct_narrow_answer() -> None:
+    ollama = RecordingOllama()
+    engine = InsightEngine(ollama)  # type: ignore[arg-type]
+
+    await engine.generate(
+        "session-a",
+        "I don't know where Patra is in Greece.",
+        Detection(
+            should_trigger=True,
+            confidence=0.92,
+            reason="explicit stable knowledge gap",
+            intent="knowledge_gap",
+            subject="location of Patra",
+            source_text="I don't know where Patra is in Greece",
+            knowledge_scope="stable",
+        ),
+        [],
+        "I don't know where Patra is in Greece.",
+        "en",
+    )
+
+    prompt = ollama.messages[1]["content"]
+    assert "directly supply the one stable fact" in prompt
+    assert "do not broaden the answer beyond the gap" in prompt
+
+
 def test_preserves_mixed_script_content_without_guessing_language() -> None:
     assert sanitize_insight_text(
         "Η πρωτεύουσα της Λήμνου είναι η Μύρινα,位于该岛西海岸。", "el"

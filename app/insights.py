@@ -44,6 +44,8 @@ then explain it in plain language and say briefly why it matters in this convers
 repeat the surrounding sentence.
 If the intent is `fact_check`, correct only the specific claim in source_text. State the correct stable
 fact directly without scolding the speaker or expanding into unrelated advice.
+If the intent is `knowledge_gap`, directly supply the one stable fact the speaker said they do not
+know. Do not mention that they expressed uncertainty, and do not broaden the answer beyond the gap.
 If the intent is `entity_context`, describe only the named person's role, responsibility, or
 relationship supported by the supplied conversation. Qualify inferred roles with `appears to be`,
 `likely`, or equivalent wording in the output language; never invent an exact title or sensitive trait.

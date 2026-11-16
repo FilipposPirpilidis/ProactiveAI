@@ -38,6 +38,9 @@ technical_term_aliases:
 - A concrete adjacent technical fact is eligible when it directly helps the listener follow the
   emerging topic, even if nobody explicitly requested it. Prefer a practical detail over a generic
   definition or paraphrase.
+- Treat an explicit statement of missing knowledge as an answerable request even without question
+  grammar. Fill one objective, stable gap directly; ignore private/personal unknowns, opinions,
+  rhetorical uncertainty, and anything requiring current or live information.
 - Resolve an obviously ASR-corrupted technical term only when its platform and surrounding concept
   make the canonical term unambiguous. Preserve the spoken excerpt as evidence and stay silent when
   more than one correction is plausible.

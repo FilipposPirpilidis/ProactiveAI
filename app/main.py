@@ -134,6 +134,7 @@ class PartialInsightWorker:
         "fact_check",
         "warning",
         "context",
+        "knowledge_gap",
         "mechanism",
         "implementation_option",
         "architecture_guidance",

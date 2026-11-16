@@ -35,6 +35,7 @@ class InsightFreshnessValidator:
                 "definition",
                 "fact_check",
                 "context",
+                "knowledge_gap",
                 "mechanism",
                 "implementation_option",
                 "architecture_guidance",

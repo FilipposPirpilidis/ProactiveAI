@@ -223,6 +223,7 @@ class ProactiveDetector:
                     "definition",
                     "fact_check",
                     "context",
+                    "knowledge_gap",
                     "mechanism",
                     "implementation_option",
                     "architecture_guidance",
@@ -280,6 +281,14 @@ class ProactiveDetector:
             "offer a practical alternative when supported. Answer that question—not an earlier topic. Questions that "
             "are subjective, interpersonal, or clearly addressed from one person to another should not "
             "trigger merely so the assistant can state an opinion or say it has no opinion. "
+            "Treat an explicit knowledge-gap statement as an answerable request even when it is not "
+            "grammatically a question. Examples in any language include `I don't know where Patra is`, "
+            "`I'm not sure what OAuth means`, and `Δεν ξέρω πού βρίσκεται η Πάτρα`. Trigger with intent "
+            "`knowledge_gap` when one concise stable fact can directly fill the stated gap. Set `subject` "
+            "to the missing fact or concept and `source_text` to the smallest phrase expressing the gap. "
+            "Do not trigger for uncertainty about personal/private state (`I don't know where my keys are`), "
+            "opinions, decisions only the speaker can make, rhetorical uncertainty, or anything requiring "
+            "current/live information. "
             "When the latest utterance appears to answer an objective question or respond to a factual "
             "statement in the immediately preceding conversation turn, verify the response using reliable "
             "knowledge. A short reply, including a number or yes/no, still counts as a possible answer. "
@@ -367,7 +376,7 @@ class ProactiveDetector:
             "This is the trigger-detection stage only. Never write the final glasses card. Always set "
             "`insight` to null; a separate model writes accepted cards. Return JSON only: "
             '{"should_trigger":bool,"confidence":0..1,"reason":"short","intent":'
-            '"context|entity_context|fact_check|definition|calculation|suggestion|question|reminder|task|decision|warning|mechanism|implementation_option|architecture_guidance|tradeoff|none",'
+            '"context|entity_context|knowledge_gap|fact_check|definition|calculation|suggestion|question|reminder|task|decision|warning|mechanism|implementation_option|architecture_guidance|tradeoff|none",'
             '"insight":"display text or null","people":['
             '{"name":"spoken name","summary":"supported person context",'
             '"confidence":0..1,"evidence":"conversation evidence"}],'
@@ -419,6 +428,7 @@ class ProactiveDetector:
             "definition": 0.84,
             "context": 0.90,
             "entity_context": 0.90,
+            "knowledge_gap": 0.84,
             "fact_check": 0.95,
             "mechanism": 0.70,
             "implementation_option": 0.70,

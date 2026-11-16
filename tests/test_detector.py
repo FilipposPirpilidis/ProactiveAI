@@ -217,6 +217,54 @@ async def test_conversate_mode_can_trigger_on_a_statement() -> None:
     assert "I think Sydney is the capital of Australia." in ollama.last_prompt
 
 
+async def test_conversate_fills_an_explicit_stable_knowledge_gap() -> None:
+    ollama = StructuredDetectionOllama(
+        '{"should_trigger":true,"confidence":0.92,'
+        '"reason":"explicit stable knowledge gap","intent":"knowledge_gap",'
+        '"insight":null,"people":[],"answer_verification":false,'
+        '"subject":"location of Patra","topic":"Greek geography",'
+        '"angle":"location","source_text":"I don\'t know where Patra is in Greece",'
+        '"knowledge_scope":"stable","requires_current_information":false,'
+        '"discourse_mode":"conversation"}'
+    )
+    detector = ProactiveDetector(ollama, mode="conversate")  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        "I don't know where Patra is in Greece.",
+        "I don't know where Patra is in Greece.",
+        language="en",
+    )
+
+    assert result.should_trigger is True
+    assert result.intent == "knowledge_gap"
+    assert result.subject == "location of Patra"
+    assert "explicit knowledge-gap statement" in ollama.last_prompt
+    assert "Δεν ξέρω πού βρίσκεται η Πάτρα" in ollama.last_prompt
+
+
+async def test_conversate_rejects_a_current_information_knowledge_gap() -> None:
+    ollama = StructuredDetectionOllama(
+        '{"should_trigger":true,"confidence":0.93,'
+        '"reason":"explicit current knowledge gap","intent":"knowledge_gap",'
+        '"insight":null,"people":[],"answer_verification":false,'
+        '"subject":"current traffic in Patra","source_text":"I don\'t know the traffic",'
+        '"knowledge_scope":"current","requires_current_information":true,'
+        '"discourse_mode":"conversation"}'
+    )
+    detector = ProactiveDetector(ollama, mode="conversate")  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        "I don't know what traffic is like in Patra now.",
+        "I don't know what traffic is like in Patra now.",
+        language="en",
+    )
+
+    assert result.should_trigger is False
+    assert result.reason == "requires_current_or_uncertain_information"
+
+
 async def test_detection_can_defer_cooldown_commit_for_a_partial() -> None:
     ollama = ConversateOllama()
     detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=30)  # type: ignore[arg-type]

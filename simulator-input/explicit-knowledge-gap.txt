@@ -1,0 +1,4 @@
+# An explicit stable knowledge gap should receive an answer without question grammar.
+PARTIAL: I don't know where Patra is in Greece.
+WAIT: 5
+EXPECT_INSIGHT:

@@ -950,6 +950,16 @@ docker compose --profile simulator run --rm \
   simulator
 ```
 
+The explicit-knowledge-gap regression verifies that a statement such as `I don't know where Patra
+is in Greece` receives a concise stable fact even though it is not phrased as a question:
+
+```bash
+docker compose --profile simulator run --rm \
+  -e SIMULATOR_TEXT_FILE=/input/explicit-knowledge-gap.txt \
+  -e SIMULATOR_LANGUAGE=en \
+  simulator
+```
+
 Questions and high-priority fast-lane signals may bypass cooldown. The fast lane only allows
 the latest utterance to trigger. The topic observer can use an earlier supporting span while that
 span remains part of the active rolling topic.
