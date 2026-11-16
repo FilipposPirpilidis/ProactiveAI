@@ -1,4 +1,5 @@
 from app.topic_observer import TopicObserver
+from app.profiles import InsightProfile, ProfileTerm
 
 
 class RecordingOllama:
@@ -100,3 +101,35 @@ async def test_topic_observer_requires_finished_one_pass_card() -> None:
     assert result.should_trigger is False
     assert result.reason == "incomplete_topic_evidence"
     assert "COMPLETE user-visible card" in ollama.prompt
+
+
+async def test_topic_observer_receives_profile_and_contextual_terms() -> None:
+    ollama = RecordingOllama(
+        '{"should_trigger":false,"confidence":0.90,"reason":"already explained",'
+        '"intent":"none","insight":null,"people":[],"answer_verification":false,'
+        '"knowledge_scope":"stable","requires_current_information":false,'
+        '"discourse_mode":"conversation"}'
+    )
+    profile = InsightProfile(
+        id="ios_development",
+        display_name="iOS Development",
+        signals=["SwiftUI"],
+        preferred_insights=["definition", "mechanism"],
+        terms={
+            "ObservableObject": ProfileTerm(
+                aliases=["observable"],
+                importance="high",
+                requires_context=["SwiftUI"],
+            )
+        },
+    )
+    observer = TopicObserver(ollama)  # type: ignore[arg-type]
+
+    await observer.detect(
+        "The observable state updates our SwiftUI view.",
+        profile=profile,
+    )
+
+    assert "iOS Development (`ios_development`)" in ollama.prompt
+    assert "ObservableObject" in ollama.prompt
+    assert "definition, mechanism" in ollama.prompt

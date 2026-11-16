@@ -461,6 +461,15 @@ The server first sends:
   "partial_insight_interval_ms": 2000,
   "partial_insight_min_words": 7,
   "partial_insight_min_confidence": 0.85,
+  "profile_detection": true,
+  "available_profiles": [
+    "general",
+    "software_engineering",
+    "ios_development",
+    "physics",
+    "finance",
+    "politics_news"
+  ],
   "insight_receipts": ["received", "displayed"]
 }
 ```
@@ -909,6 +918,25 @@ docker compose --profile simulator run --rm \
   simulator
 ```
 
+### Automatic insight profiles
+
+The topic lane automatically selects a relevance profile from recent finalized speech. Detection
+is local and does not add another model request. A strong cluster of signals can switch profiles
+immediately; weaker evidence must win twice, preventing an isolated word from changing the active
+profile. The profile can change again as the conversation moves to another subject.
+
+Profiles live in `config/insight-profiles.yaml`. The initial catalog includes `general`,
+`software_engineering`, `ios_development`, `physics`, `finance`, and `politics_news`. Each profile
+provides domain signals, contextual term aliases, preferred card types, and a marker for domains
+that may require current information. The profile is passed to the existing one-pass topic observer
+as a relevance hint, not as a restriction.
+
+Term aliases can require surrounding context. For example, `observable` is considered
+`ObservableObject` only around SwiftUI/state/view language, and `Combine` requires Swift,
+publisher/subscriber, or iOS context. Canonical technical terms remain unchanged in the card while
+their explanation follows the resolved conversation language. Profile changes and confidence are
+visible in logs as `Insight profile changed` and on every `Topic evaluated` entry.
+
 Questions and high-priority fast-lane signals may bypass cooldown. The fast lane only allows
 the latest utterance to trigger. The topic observer can use an earlier supporting span while that
 span remains part of the active rolling topic.
@@ -932,6 +960,7 @@ span remains part of the active rolling topic.
 | `AUTH_TOKEN_TTL_SECONDS` | `86400` | Issued-token lifetime; allowed range 60 seconds–365 days |
 | `DETECTOR_MODE` | `conversate` | `conversate`, `hybrid`, or `heuristic` |
 | `CONVERSATE_RULES_PATH` | `/app/config/conversate-rules.md` | Trusted Markdown rules file; Compose mounts it at `/config/conversate-rules.md` |
+| `INSIGHT_PROFILES_PATH` | `/app/config/insight-profiles.yaml` | Auto-detected profile catalog containing domain signals, contextual terms, and preferred insight types |
 | `DETECTOR_THRESHOLD` | `0.72` | Minimum accepted trigger confidence |
 | `INSIGHT_COOLDOWN_SECONDS` | `20` | Low-priority per-session cooldown |
 | `PARTIAL_INSIGHT_DEBOUNCE_MS` | `650` | Delay used to coalesce rapidly changing partials in `conversate` mode |

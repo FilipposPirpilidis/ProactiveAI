@@ -3,6 +3,7 @@ import json
 from app.languages import language_instruction
 from app.models import Detection
 from app.ollama import OllamaClient, OllamaError
+from app.profiles import InsightProfile
 from app.rules import technical_term_candidates
 
 
@@ -42,11 +43,25 @@ class TopicObserver:
         language: str | None = None,
         shown_insights: tuple[str, ...] = (),
         explained_angles: tuple[str, ...] = (),
+        profile: InsightProfile | None = None,
     ) -> Detection:
-        alias_candidates = technical_term_candidates(
-            conversation,
-            self.technical_term_aliases,
+        alias_candidates = list(
+            technical_term_candidates(
+                conversation,
+                self.technical_term_aliases,
+            )
         )
+        if profile:
+            alias_candidates.extend(profile.term_candidates(conversation))
+        alias_candidates = list(dict.fromkeys(alias_candidates))
+        profile_id = profile.id if profile else "general"
+        profile_name = profile.display_name if profile else "General"
+        preferred_insights = (
+            ", ".join(profile.preferred_insights)
+            if profile and profile.preferred_insights
+            else "definition, technical_context, mechanism"
+        )
+        current_information = bool(profile and profile.current_information)
         prompt = f"""You are the topic observer for smart glasses following a live conversation.
 Unlike an immediate utterance detector, evaluate the ACTIVE TOPIC across the complete recent
 conversation below. Select at most ONE card: the most useful new technical fact, explanation,
@@ -57,6 +72,11 @@ Return the COMPLETE user-visible card in `insight` in the required output langua
 an outline or instructions for another model. Aim for about {self.target_characters} characters and
 never exceed {self.max_characters}. Begin topic-observer cards with a short useful heading followed
 by ` — `. For a diagnostic hypothesis, use explicitly cautious language in the card itself.
+
+Active auto-detected profile: {profile_name} (`{profile_id}`).
+Preferred insight types for this profile: {preferred_insights}.
+This profile may involve current information: {str(current_information).lower()}.
+The profile is a relevance hint, not a restriction; follow a clear topic shift in the transcript.
 
 Good cards do more than repeat the speakers. They can connect several turns and add stable general
 knowledge. One concrete adjacent technical fact is eligible when it directly helps the listener
@@ -103,7 +123,7 @@ Already displayed cards:
 Already explained subject-angle fingerprints:
 {self._lines(explained_angles)}
 
-Configured technical-term candidates recognized in the recent speech:
+Configured or profile-specific technical terms recognized in the recent speech:
 {self._lines(alias_candidates)}
 
 Recent active-topic conversation:

@@ -232,6 +232,8 @@ def test_websocket_transcript_to_insight(tmp_path, monkeypatch) -> None:
             ready = socket.receive_json()
             assert ready["type"] == "ready"
             assert ready["detector_mode"] == "heuristic"
+            assert ready["profile_detection"] is False
+            assert ready["available_profiles"] == ["general"]
             socket.send_json(
                 {
                     "type": "transcript",

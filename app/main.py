@@ -24,6 +24,7 @@ from app.models import (
     TranscriptMessage,
 )
 from app.ollama import OllamaClient, OllamaError
+from app.profiles import InsightProfileCatalog, ProfileDetector, ProfileMatch
 from app.question_observer import QuestionObserver
 from app.session_analysis import SessionAnalyzer
 from app.topic_observer import TopicObserver
@@ -47,6 +48,7 @@ class ServiceContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.rules = ConversateRules.load(settings.conversate_rules_path)
+        self.profiles = InsightProfileCatalog.load(settings.insight_profiles_path)
         self.trigger_ollama = OllamaClient(
             settings.resolved_trigger_base_url,
             settings.resolved_trigger_model,
@@ -467,10 +469,25 @@ class TopicInsightWorker:
         self._revision = 0
         self._latest: tuple[int, TranscriptMessage, str] | None = None
         self._task: asyncio.Task[None] | None = None
+        self._profile_detector = ProfileDetector(services.profiles)
+        self._profile_match = ProfileMatch(
+            services.profiles.get(services.profiles.default_profile),
+            0.5,
+            (),
+        )
 
     def submit(self, transcript: TranscriptMessage, conversation: str) -> None:
         self._revision += 1
         self._latest = (self._revision, transcript, conversation)
+        self._profile_match = self._profile_detector.observe(conversation)
+        if self._profile_match.changed:
+            logger.info(
+                "Insight profile changed session=%s profile=%s confidence=%.2f evidence=%s",
+                self.session_id,
+                self._profile_match.profile.id,
+                self._profile_match.confidence,
+                ",".join(self._profile_match.evidence) or "none",
+            )
         if not self._task or self._task.done():
             self._task = asyncio.create_task(self._run())
 
@@ -519,6 +536,7 @@ class TopicInsightWorker:
                 limit=8,
             )
         )
+        profile_match = self._profile_match
         detection = await self.services.topic_observer.detect(
             conversation,
             language=transcript.language,
@@ -526,14 +544,18 @@ class TopicInsightWorker:
             explained_angles=self.services.detector.explained_subject_angles(
                 self.session_id
             ),
+            profile=profile_match.profile,
         )
         logger.info(
             "Topic evaluated session=%s event=%s revision=%d triggered=%s "
-            "intent=%s confidence=%.2f topic=%s subject=%s angle=%s scope=%s reason=%s",
+            "profile=%s profile_confidence=%.2f intent=%s confidence=%.2f "
+            "topic=%s subject=%s angle=%s scope=%s reason=%s",
             self.session_id,
             transcript.event_id,
             revision,
             detection.should_trigger,
+            profile_match.profile.id,
+            profile_match.confidence,
             detection.intent,
             detection.confidence,
             detection.topic,
@@ -1143,6 +1165,11 @@ async def websocket_endpoint(
             "topic_observer_debounce_ms": (
                 services.settings.topic_observer_debounce_ms
             ),
+            "profile_detection": (
+                services.settings.topic_observer_enabled
+                and services.settings.detector_mode == "conversate"
+            ),
+            "available_profiles": list(services.profiles.ids),
             "question_observer": (
                 services.settings.question_observer_enabled
                 and services.settings.detector_mode == "conversate"
