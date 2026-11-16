@@ -216,11 +216,17 @@ class PartialInsightWorker:
                 verify_followup_answers=False,
             )
             logger.info(
-                "Partial evaluated session=%s event=%s revision=%d triggered=%s reason=%s",
+                "Partial evaluated session=%s event=%s revision=%d triggered=%s "
+                "intent=%s confidence=%.2f subject=%s scope=%s discourse=%s reason=%s",
                 self.session_id,
                 transcript.event_id,
                 revision,
                 detection.should_trigger,
+                detection.intent,
+                detection.confidence,
+                detection.subject,
+                detection.knowledge_scope,
+                detection.discourse_mode,
                 detection.reason,
             )
             if not detection.should_trigger:
@@ -299,6 +305,11 @@ class PartialInsightWorker:
                     return
                 self.services.detector.record_trigger(self.session_id, latest_segment)
                 self.services.detector.record_insight(self.session_id, insight.text)
+                record_subject = getattr(
+                    self.services.detector, "record_explained_subject", None
+                )
+                if record_subject and detection.intent == "definition":
+                    record_subject(self.session_id, detection.subject)
                 self._last_insight_snapshot = transcript.text
                 logger.info(
                     "Partial insight emitted session=%s event=%s insight=%s",
@@ -839,6 +850,9 @@ async def _process_final_transcript(
         await services.memory.store_insight(insight)
         services.detector.record_trigger(session_id, transcript.text)
         services.detector.record_insight(session_id, insight.text)
+        record_subject = getattr(services.detector, "record_explained_subject", None)
+        if record_subject and detection.intent == "definition":
+            record_subject(session_id, detection.subject)
         await _send_json(websocket, send_lock, _insight_payload(insight))
 
 

@@ -14,8 +14,10 @@ class ConversateOllama:
         messages = args[0]
         self.last_prompt = messages[0]["content"]  # type: ignore[index]
         return (
-            '{"should_trigger":true,"confidence":0.94,'
+            '{"should_trigger":true,"confidence":0.97,'
             '"reason":"likely factual error","intent":"fact_check",'
+            '"subject":"capital of Australia","source_text":"Sydney is the capital of Australia",'
+            '"knowledge_scope":"stable","discourse_mode":"conversation",'
             '"insight":"Correction: Canberra is the capital of Australia."}'
         )
 
@@ -41,7 +43,9 @@ class TechnicalTermOllama:
         self.last_prompt = messages[0]["content"]  # type: ignore[index]
         return (
             '{"should_trigger":true,"confidence":0.91,"reason":"new technical acronym",'
-            '"intent":"definition","insight":"RLHF — Reinforcement Learning from Human '
+            '"intent":"definition","subject":"RLHF","source_text":"We use RLHF",'
+            '"knowledge_scope":"stable","discourse_mode":"lecture",'
+            '"insight":"RLHF — Reinforcement Learning from Human '
             'Feedback; it tunes a model using human preferences."}'
         )
 
@@ -54,7 +58,7 @@ class EntityRoleOllama:
         messages = args[0]
         self.last_prompt = messages[0]["content"]  # type: ignore[index]
         return (
-            '{"should_trigger":true,"confidence":0.88,'
+            '{"should_trigger":true,"confidence":0.92,'
             '"reason":"role supported by interview and feedback clues",'
             '"intent":"entity_context",'
             '"insight":"From this conversation, Vincent appears to be the hiring manager or decision-maker."}'
@@ -92,8 +96,20 @@ class AnswerVerificationOllama:
         return (
             '{"should_trigger":true,"confidence":0.99,"reason":"human answer is incorrect",'
             '"intent":"fact_check","insight":"Correction: 54 + 54 is 108.",'
+            '"subject":"54 plus 54","source_text":"The answer is 118",'
+            '"knowledge_scope":"stable","discourse_mode":"conversation",'
             '"people":[],"answer_verification":true}'
         )
+
+
+class StructuredDetectionOllama:
+    def __init__(self, response: str) -> None:
+        self.response = response
+        self.last_prompt = ""
+
+    async def chat(self, *args: object, **kwargs: object) -> str:
+        self.last_prompt = args[0][0]["content"]  # type: ignore[index]
+        return self.response
 
 
 async def test_strong_question_triggers() -> None:
@@ -230,6 +246,65 @@ async def test_conversate_explains_a_short_technical_acronym_without_a_question(
     assert result.insight is None
     assert "proactively trigger" in ollama.last_prompt
     assert "required output language is English" in ollama.last_prompt
+
+
+async def test_conversate_explains_a_specialist_phrase_inside_narration() -> None:
+    ollama = StructuredDetectionOllama(
+        '{"should_trigger":true,"confidence":0.92,"reason":"unexplained technical concept",'
+        '"intent":"definition","insight":null,"people":[],"answer_verification":false,'
+        '"subject":"water pressure zone","source_text":"pressure in zone 2",'
+        '"knowledge_scope":"stable","requires_current_information":false,'
+        '"discourse_mode":"narration"}'
+    )
+    detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=0)  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-narration",
+        "The story moves to the utility room. Pressure in zone 2 started falling.",
+        "Pressure in zone 2 started falling.",
+        language="en",
+    )
+
+    assert result.should_trigger is True
+    assert result.intent == "definition"
+    assert result.subject == "water pressure zone"
+    assert result.discourse_mode == "narration"
+    assert "narration alone is not a reason" in ollama.last_prompt
+
+
+async def test_current_or_uncertain_fact_check_is_suppressed() -> None:
+    ollama = StructuredDetectionOllama(
+        '{"should_trigger":true,"confidence":0.99,"reason":"possibly outdated claim",'
+        '"intent":"fact_check","insight":null,"people":[],"answer_verification":false,'
+        '"subject":"current fuel price","source_text":"fuel costs one euro today",'
+        '"knowledge_scope":"current","requires_current_information":true,'
+        '"discourse_mode":"conversation"}'
+    )
+    detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=0)  # type: ignore[arg-type]
+
+    result = await detector.detect("session-current", "Fuel costs one euro today in Athens.")
+
+    assert result.should_trigger is False
+    assert result.reason == "requires_current_or_uncertain_information"
+
+
+async def test_canonical_subject_is_not_explained_twice_in_one_session() -> None:
+    response = (
+        '{"should_trigger":true,"confidence":0.93,"reason":"unexplained acronym",'
+        '"intent":"definition","insight":null,"people":[],"answer_verification":false,'
+        '"subject":"RLHF","source_text":"RLHF pipeline",'
+        '"knowledge_scope":"stable","requires_current_information":false,'
+        '"discourse_mode":"lecture"}'
+    )
+    detector = ProactiveDetector(
+        StructuredDetectionOllama(response), mode="conversate", cooldown_seconds=0
+    )  # type: ignore[arg-type]
+    detector.record_explained_subject("session-repeat", "R.L.H.F.")
+
+    result = await detector.detect("session-repeat", "The RLHF pipeline runs after training.")
+
+    assert result.should_trigger is False
+    assert result.reason == "subject_already_explained"
 
 
 async def test_conversate_can_infer_a_named_person_role_from_conversation_clues() -> None:

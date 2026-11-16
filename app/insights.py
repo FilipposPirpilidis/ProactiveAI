@@ -36,6 +36,11 @@ current facts, or specifics that are not supported. If correcting a claim, state
 directly. If explaining context, add information rather than restating the conversation.
 If the intent is `question`, answer the newest question directly in the first sentence. Do not
 merely describe the question, say that it was asked, or answer an older question from the transcript.
+If the intent is `definition`, begin with the exact subject, expand an acronym when applicable,
+then explain it in plain language and say briefly why it matters in this conversation. Do not merely
+repeat the surrounding sentence.
+If the intent is `fact_check`, correct only the specific claim in source_text. State the correct stable
+fact directly without scolding the speaker or expanding into unrelated advice.
 If the intent is `entity_context`, describe only the named person's role, responsibility, or
 relationship supported by the supplied conversation. Qualify inferred roles with `appears to be`,
 `likely`, or equivalent wording in the output language; never invent an exact title or sensitive trait.
@@ -53,6 +58,10 @@ or noted. Never say it was set, scheduled, completed, or sent, and never append 
 
 Intent: {detection.intent}
 Trigger reason: {detection.reason}
+Canonical subject: {detection.subject or "Not supplied"}
+Relevant source text: {detection.source_text or "Not supplied"}
+Knowledge scope: {detection.knowledge_scope}
+Discourse mode: {detection.discourse_mode}
 Relevant memories:
 {memory_text}
 

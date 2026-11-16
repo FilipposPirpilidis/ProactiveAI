@@ -27,6 +27,18 @@ class InsightFreshnessValidator:
     ) -> FreshnessDecision:
         if not source_is_current:
             return FreshnessDecision(False, "stale_source")
+        if detection.requires_current_information:
+            return FreshnessDecision(False, "current_information_unavailable")
+        if (
+            detection.intent in {"definition", "fact_check", "context"}
+            and detection.knowledge_scope in {"current", "uncertain"}
+        ):
+            return FreshnessDecision(False, "unsafe_knowledge_scope")
+        if detection.intent == "fact_check" and detection.knowledge_scope in {
+            "personal",
+            "fictional_context",
+        }:
+            return FreshnessDecision(False, "unsafe_fact_check_scope")
         if elapsed_seconds > max_age_seconds:
             return FreshnessDecision(False, "stale_insight")
         if not insight.text.strip():

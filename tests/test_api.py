@@ -61,6 +61,7 @@ class CombinedDetector:
             reason="factual correction",
             intent="fact_check",
             insight="Correction: Canberra is the capital of Australia.",
+            knowledge_scope="stable",
         )
 
 
@@ -146,6 +147,7 @@ class SlowPartialDetector:
             reason="partial factual correction",
             intent="fact_check",
             insight="Correction: Canberra is the capital of Australia.",
+            knowledge_scope="stable",
         )
 
 
@@ -174,6 +176,7 @@ class RepeatedAnswerCorrectionDetector(CombinedDetector):
             intent="fact_check",
             insight="Correction: 54 + 54 is 108.",
             answer_verification=True,
+            knowledge_scope="stable",
         )
 
 

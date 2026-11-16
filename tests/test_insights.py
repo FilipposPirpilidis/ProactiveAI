@@ -59,6 +59,35 @@ async def test_entity_context_generation_requires_qualified_role_language() -> N
     assert "never invent an exact title or sensitive trait" in prompt
 
 
+async def test_definition_prompt_uses_structured_subject_and_source() -> None:
+    ollama = RecordingOllama()
+    engine = InsightEngine(ollama)  # type: ignore[arg-type]
+
+    await engine.generate(
+        "session-a",
+        "Pressure in zone 2 started falling.",
+        Detection(
+            should_trigger=True,
+            confidence=0.92,
+            reason="unexplained technical concept",
+            intent="definition",
+            subject="water pressure zone",
+            source_text="pressure in zone 2",
+            knowledge_scope="stable",
+            discourse_mode="narration",
+        ),
+        [],
+        "Pressure in zone 2 started falling.",
+        "en",
+    )
+
+    prompt = ollama.messages[1]["content"]
+    assert "Canonical subject: water pressure zone" in prompt
+    assert "Relevant source text: pressure in zone 2" in prompt
+    assert "Knowledge scope: stable" in prompt
+    assert "begin with the exact subject" in prompt
+
+
 def test_preserves_mixed_script_content_without_guessing_language() -> None:
     assert sanitize_insight_text(
         "Η πρωτεύουσα της Λήμνου είναι η Μύρινα,位于该岛西海岸。", "el"

@@ -59,9 +59,17 @@ class ProactiveDetector:
         self.rules_instructions = rules_instructions.strip()
         self._last_trigger: dict[str, tuple[datetime, str]] = {}
         self._recent_insights: dict[str, deque[str]] = {}
+        self._explained_subjects: dict[str, deque[str]] = {}
 
     def record_insight(self, session_id: str, text: str) -> None:
         self._recent_insights.setdefault(session_id, deque(maxlen=5)).append(text)
+
+    def record_explained_subject(self, session_id: str, subject: str | None) -> None:
+        normalized = self._normalize_subject(subject)
+        if normalized:
+            subjects = self._explained_subjects.setdefault(session_id, deque(maxlen=20))
+            if normalized not in subjects:
+                subjects.append(normalized)
 
     def record_trigger(self, session_id: str, text: str) -> None:
         normalized = " ".join(text.lower().split())
@@ -146,7 +154,7 @@ class ProactiveDetector:
         if is_question:
             # Explicit question punctuation is a deterministic high-priority signal.
             # It must work even in heuristic mode or when the attention LLM is busy.
-            score += max(self.threshold, 0.7)
+            score += max(self.threshold, 0.85)
         matches = sum(bool(re.search(pattern, normalized)) for pattern in self._strong_patterns)
         score += min(0.8, matches * 0.55)
         if word_count >= 8:
@@ -175,8 +183,29 @@ class ProactiveDetector:
         else:
             result = Detection(should_trigger=False, confidence=1 - score, reason="no_actionable_signal")
 
-        if result.should_trigger and result.confidence >= self.threshold:
+        minimum_confidence = self._minimum_confidence(result.intent)
+        if result.should_trigger and result.confidence >= minimum_confidence:
             result.answer_verification = answer_verification
+            if result.intent == "definition" and self._subject_was_explained(
+                session_id, result.subject
+            ):
+                result.should_trigger = False
+                result.reason = "subject_already_explained"
+                return result
+            if result.requires_current_information or (
+                result.intent in {"definition", "fact_check", "context"}
+                and result.knowledge_scope in {"current", "uncertain"}
+            ):
+                result.should_trigger = False
+                result.reason = "requires_current_or_uncertain_information"
+                return result
+            if result.intent == "fact_check" and result.knowledge_scope in {
+                "personal",
+                "fictional_context",
+            }:
+                result.should_trigger = False
+                result.reason = "fact_check_outside_stable_knowledge"
+                return result
             if cooldown_active and result.intent in {"context", "entity_context", "suggestion"}:
                 result.should_trigger = False
                 result.reason = "cooldown_low_priority"
@@ -197,6 +226,8 @@ class ProactiveDetector:
     ) -> Detection:
         prior_insights = self._recent_insights.get(session_id)
         shown_insights = "\n".join(f"- {text}" for text in prior_insights or ()) or "None"
+        explained_subjects = self._explained_subjects.get(session_id)
+        shown_subjects = "\n".join(f"- {text}" for text in explained_subjects or ()) or "None"
         prompt = (
             "You are the attention gate for smart glasses that quietly follows a live conversation. "
             "The LATEST UTTERANCE is the only event allowed to trigger a card. Older conversation is "
@@ -238,16 +269,28 @@ class ProactiveDetector:
             "generic caution, conversational commentary, or restatement of the latest words is not "
             "added value. Fragmentary narration such as `the agents leaked` or `the story says roughly` "
             "must not trigger without enough context for a concrete and reliable addition. "
-            "Also proactively trigger when the latest utterance newly introduces an acronym, "
-            "specialist term, named technical method, protocol, standard, scientific concept, or "
-            "difficult reference that a knowledgeable non-expert may not understand and a plain "
-            "one-sentence explanation would materially help them follow the conversation. Examples "
+            "Also proactively trigger when the latest utterance newly introduces an unexplained acronym, "
+            "specialist phrase, named technical method, protocol, standard, scientific concept, mechanism, "
+            "or difficult reference that a knowledgeable non-expert may not understand and a plain "
+            "one-sentence explanation would materially help them follow the conversation. This applies "
+            "inside ordinary conversation, lectures, narration, and stories: narration alone is not a "
+            "reason to suppress a genuinely useful technical explanation. Multi-word concepts such as "
+            "`water pressure zone` are eligible even when they are not acronyms. Examples "
             "include RLHF, RAG, LoRA, PKCE, quantization, backpropagation, synaptic pruning, and "
             "transformer attention. Use intent `definition` and begin the card with the term being "
             "explained. Do not require anyone to ask what it means. Do not trigger for an ordinary "
             "company/person name alone, a universally familiar abbreviation in this context, a term "
             "already explained in recent conversation or a displayed card, or when the speaker is "
             "currently defining it themselves. "
+            "For factual corrections, trigger only when the LATEST UTTERANCE contains a material, "
+            "objectively false claim that can be corrected using stable general knowledge with very high "
+            "confidence. Stay silent when a statement is correct. Never fact-check fictional plot events, "
+            "opinions, predictions, personal claims, or facts that require live/current information. "
+            "Set `knowledge_scope` to `stable`, `current`, `personal`, `uncertain`, or `fictional_context`; "
+            "set `requires_current_information` true whenever verification would need the web or live data. "
+            "Classify `discourse_mode` as conversation, lecture, narration, fiction, or unknown. "
+            "For every definition or fact check, copy the smallest relevant phrase into `source_text` and "
+            "put the canonical term or corrected topic in `subject`. "
             "Also track named people across the recent conversation. Use intent `entity_context` only "
             "when the latest utterance introduces a name or adds new concrete evidence that makes the "
             "person's role, responsibility, or relationship materially clearer. Require at least two "
@@ -283,11 +326,17 @@ class ProactiveDetector:
             '"insight":"display text or null","people":['
             '{"name":"spoken name","summary":"supported person context",'
             '"confidence":0..1,"evidence":"conversation evidence"}],'
-            '"answer_verification":bool}.\n'
+            '"answer_verification":bool,"subject":"canonical topic or null",'
+            '"source_text":"small exact relevant phrase or null",'
+            '"knowledge_scope":"stable|current|personal|uncertain|fictional_context",'
+            '"requires_current_information":bool,'
+            '"discourse_mode":"conversation|lecture|narration|fiction|unknown"}.\n'
             "Available personal/meeting context:\n"
             + (memory_context or "None")
             + "\n\nAlready displayed insight (do not repeat):\n"
             + shown_insights
+            + "\n\nAlready explained canonical subjects (do not explain again):\n"
+            + shown_subjects
             + "\n\nLATEST UTTERANCE (the only trigger):\n"
             + latest_utterance
             + "\n\nOlder/recent conversation (supporting context only):\n"
@@ -314,6 +363,35 @@ class ProactiveDetector:
         if re.search(r"urgent|deadline", text):
             return "warning"
         return "question"
+
+    def _minimum_confidence(self, intent: str) -> float:
+        intent_thresholds = {
+            "question": 0.80,
+            "definition": 0.84,
+            "context": 0.90,
+            "entity_context": 0.90,
+            "fact_check": 0.95,
+        }
+        return max(self.threshold, intent_thresholds.get(intent, self.threshold))
+
+    @staticmethod
+    def _normalize_subject(subject: str | None) -> str:
+        if not subject:
+            return ""
+        normalized = unicodedata.normalize("NFKD", subject).casefold()
+        normalized = "".join(
+            character
+            for character in normalized
+            if not unicodedata.combining(character)
+        )
+        normalized = normalized.replace(".", "")
+        return " ".join(re.findall(r"[\w]+", normalized, flags=re.UNICODE))
+
+    def _subject_was_explained(self, session_id: str, subject: str | None) -> bool:
+        normalized = self._normalize_subject(subject)
+        if not normalized:
+            return False
+        return normalized in self._explained_subjects.get(session_id, ())
 
     @staticmethod
     def _similar(left: str, right: str) -> float:

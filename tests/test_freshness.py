@@ -9,6 +9,7 @@ def decision(intent: str = "definition", *, answer_verification: bool = False) -
         reason="test",
         intent=intent,
         answer_verification=answer_verification,
+        knowledge_scope="stable",
     )
 
 
@@ -65,3 +66,24 @@ def test_repeated_question_or_answer_correction_remains_eligible() -> None:
 
     assert question.accepted is True
     assert correction.accepted is True
+
+
+def test_rejects_current_or_fictional_fact_checks() -> None:
+    validator = InsightFreshnessValidator(220)
+    current = decision("fact_check")
+    current.knowledge_scope = "current"
+    current.requires_current_information = True
+    fictional = decision("fact_check")
+    fictional.knowledge_scope = "fictional_context"
+
+    current_result = validator.validate(
+        card(), current, elapsed_seconds=1, max_age_seconds=8,
+        source_is_current=True, repeated=False,
+    )
+    fictional_result = validator.validate(
+        card(), fictional, elapsed_seconds=1, max_age_seconds=8,
+        source_is_current=True, repeated=False,
+    )
+
+    assert current_result.reason == "current_information_unavailable"
+    assert fictional_result.reason == "unsafe_fact_check_scope"
