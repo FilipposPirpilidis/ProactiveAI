@@ -155,7 +155,7 @@ class ProactiveTechnicalPartialDetector(SlowPartialDetector):
     async def detect_conversation(self, *args: object, **kwargs: object) -> Detection:
         return Detection(
             should_trigger=True,
-            confidence=0.91,
+            confidence=0.70,
             reason="stable architecture guidance",
             intent="architecture_guidance",
             subject="chat transport",
@@ -175,7 +175,7 @@ class TechnicalPartialInsightEngine:
                 "WebSockets only when both sides need continuous updates."
             ),
             intent="architecture_guidance",
-            confidence=0.91,
+            confidence=0.70,
         )
 
 

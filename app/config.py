@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     partial_insight_cooldown_seconds: float = Field(default=12.0, ge=0, le=300)
     partial_insight_min_words: int = Field(default=7, ge=1, le=100)
     partial_insight_min_confidence: float = Field(default=0.85, ge=0, le=1)
+    partial_technical_min_confidence: float = Field(default=0.70, ge=0, le=1)
     partial_insight_max_age_seconds: float = Field(default=8.0, ge=0.5, le=120)
     final_insight_max_age_seconds: float = Field(default=30.0, ge=1, le=300)
     topic_observer_enabled: bool = True

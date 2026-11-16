@@ -140,6 +140,12 @@ class PartialInsightWorker:
         "tradeoff",
         "decision",
     }
+    TECHNICAL_PARTIAL_INTENTS = {
+        "mechanism",
+        "implementation_option",
+        "architecture_guidance",
+        "tradeoff",
+    }
 
     def __init__(
         self,
@@ -276,9 +282,13 @@ class PartialInsightWorker:
             # Partials are provisional and frequently contain ASR fragments. Allow
             # high-confidence explanatory and technical-decision cards during
             # continuous speech so usefulness does not depend on a pause/final.
+            minimum_confidence = (
+                self.services.settings.partial_technical_min_confidence
+                if detection.intent in self.TECHNICAL_PARTIAL_INTENTS
+                else self.services.settings.partial_insight_min_confidence
+            )
             if (
-                detection.confidence
-                < self.services.settings.partial_insight_min_confidence
+                detection.confidence < minimum_confidence
                 or detection.intent
                 not in self.PROACTIVE_PARTIAL_INTENTS
             ):
@@ -1153,6 +1163,9 @@ async def websocket_endpoint(
             "partial_insight_min_words": services.settings.partial_insight_min_words,
             "partial_insight_min_confidence": (
                 services.settings.partial_insight_min_confidence
+            ),
+            "partial_technical_min_confidence": (
+                services.settings.partial_technical_min_confidence
             ),
             "topic_observer": (
                 services.settings.topic_observer_enabled

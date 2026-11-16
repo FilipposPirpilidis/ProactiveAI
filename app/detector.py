@@ -418,10 +418,10 @@ class ProactiveDetector:
             "context": 0.90,
             "entity_context": 0.90,
             "fact_check": 0.95,
-            "mechanism": 0.85,
-            "implementation_option": 0.85,
-            "architecture_guidance": 0.85,
-            "tradeoff": 0.85,
+            "mechanism": 0.70,
+            "implementation_option": 0.70,
+            "architecture_guidance": 0.70,
+            "tradeoff": 0.70,
         }
         return max(self.threshold, intent_thresholds.get(intent, self.threshold))
 

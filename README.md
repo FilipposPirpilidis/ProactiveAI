@@ -461,6 +461,7 @@ The server first sends:
   "partial_insight_interval_ms": 2000,
   "partial_insight_min_words": 7,
   "partial_insight_min_confidence": 0.85,
+  "partial_technical_min_confidence": 0.70,
   "profile_detection": false,
   "available_profiles": ["general"],
   "insight_receipts": ["received", "displayed"]
@@ -969,6 +970,7 @@ span remains part of the active rolling topic.
 | `PARTIAL_INSIGHT_COOLDOWN_SECONDS` | `12` | Cooldown for high-value cards found in partial speech; final cards retain `INSIGHT_COOLDOWN_SECONDS` |
 | `PARTIAL_INSIGHT_MIN_WORDS` | `7` | Minimum stable words required before evaluating provisional speech |
 | `PARTIAL_INSIGHT_MIN_CONFIDENCE` | `0.85` | Minimum confidence required to display a provisional card |
+| `PARTIAL_TECHNICAL_MIN_CONFIDENCE` | `0.70` | Lower gate used only for stable mechanism, implementation, architecture, and tradeoff cards during continuous speech |
 | `PARTIAL_INSIGHT_MAX_AGE_SECONDS` | `8` | Discard a provisional card when generation finishes too late |
 | `FINAL_INSIGHT_MAX_AGE_SECONDS` | `30` | Discard a final card when generation finishes too late |
 | `TOPIC_OBSERVER_ENABLED` | `true` | Enable the finalized multi-turn topic-observer lane |

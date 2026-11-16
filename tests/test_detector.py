@@ -302,7 +302,7 @@ async def test_conversate_explains_a_specialist_phrase_inside_narration() -> Non
 
 async def test_conversate_can_trigger_architecture_guidance_without_question_or_pause() -> None:
     ollama = StructuredDetectionOllama(
-        '{"should_trigger":true,"confidence":0.91,'
+        '{"should_trigger":true,"confidence":0.70,'
         '"reason":"a stable transport decision rule adds immediate value",'
         '"intent":"architecture_guidance","insight":null,"people":[],'
         '"answer_verification":false,"subject":"chat transport",'
@@ -322,6 +322,7 @@ async def test_conversate_can_trigger_architecture_guidance_without_question_or_
 
     assert result.should_trigger is True
     assert result.intent == "architecture_guidance"
+    assert result.confidence == 0.70
     assert "Do not wait for a pause" in ollama.last_prompt
     assert "architecture_guidance" in ollama.last_prompt
 
