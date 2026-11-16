@@ -276,17 +276,8 @@ class ProactiveDetector:
             "current estimates such as travel duration, traffic, weather, or symptoms as factual errors "
             "without reliable supplied data; prefer silence or clearly qualified context. "
             "Prefer silence: the information must be useful enough to interrupt the wearer's view. "
-            "If should_trigger is true, also write the final glasses card in `insight`: factual, "
-            f"calm, and immediately useful. Aim for about {self.insight_target_characters} characters; "
-            "this is a soft target, so use fewer characters for a complete direct answer and somewhat "
-            f"more when clarity requires it, but never exceed {self.insight_max_characters} characters. "
-            "Use reliable general knowledge and the "
-            "required output language stated above for every word except unavoidable proper names or "
-            "technical terms. "
-            "supplied context, but never invent personal details or current facts. For reminders or "
-            "tasks, say only that the latest request was captured or noted; never claim it was set, "
-            "scheduled, completed, or sent, and never append an unrelated remembered task. If should_trigger "
-            "is false, set insight to null. Return JSON only: "
+            "This is the trigger-detection stage only. Never write the final glasses card. Always set "
+            "`insight` to null; a separate model writes accepted cards. Return JSON only: "
             '{"should_trigger":bool,"confidence":0..1,"reason":"short","intent":'
             '"context|entity_context|fact_check|definition|calculation|suggestion|question|reminder|task|decision|warning|none",'
             '"insight":"display text or null","people":['
@@ -304,7 +295,11 @@ class ProactiveDetector:
         )
         try:
             raw = await self.ollama.chat([{"role": "user", "content": prompt}], json_output=True)
-            return Detection.model_validate(json.loads(raw))
+            detection = Detection.model_validate(json.loads(raw))
+            # Enforce the v2 boundary even if a model ignores the prompt and
+            # attempts to generate a card in the trigger response.
+            detection.insight = None
+            return detection
         except (OllamaError, ValueError, json.JSONDecodeError):
             return Detection(should_trigger=False, confidence=0.5, reason="classifier_unavailable")
 

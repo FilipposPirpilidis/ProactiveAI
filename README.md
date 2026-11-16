@@ -1,6 +1,6 @@
-# HomeBuddy Proactive AI
+# HomeBuddy Proactive AI v2.0
 
-HomeBuddy Proactive AI is a containerized service for smart glasses. It receives finalized speech-to-text events over WebSocket, follows the conversation, decides whether a short intervention would be useful, retrieves relevant memory, and sends a concise card back to HomeBuddy.
+HomeBuddy Proactive AI v2.0 is a containerized service for smart glasses. It receives partial and finalized speech-to-text events over WebSocket, follows the conversation, decides whether a short intervention would be useful, retrieves relevant memory, generates a concise card, validates that it is still fresh, and sends it back to HomeBuddy.
 
 It is designed for a Raspberry Pi 5 and ARM64 Docker, but also runs on Docker Desktop for development.
 
@@ -8,8 +8,8 @@ It is designed for a Raspberry Pi 5 and ARM64 Docker, but also runs on Docker De
 
 - FastAPI WebSocket API for HomeBuddy/Soniox transcripts
 - rolling, time-bounded conversation context
-- proactive detector with cooldown and duplicate controls
-- Ollama attention gating and insight generation
+- separate Ollama Cloud trigger detection and insight generation stages
+- deterministic freshness, cooldown, and duplicate controls
 - durable transcripts, memories, insights, and feedback
 - text-file conversation simulator
 - Docker Compose deployment and automated tests
@@ -36,7 +36,7 @@ HomeBuddy / glasses microphone
               │
               ▼
           Soniox STT
-              │ finalized transcript
+              │ partial/final transcript
               ▼
        WebSocket /v1/ws
               │
@@ -44,16 +44,22 @@ HomeBuddy / glasses microphone
       TranscriptBuffer ─────► SQLite transcript history
               │
               ▼
-      ProactiveDetector
+      Deterministic gate
          │           │
          │ no value  └────────► acknowledge and wait
          ▼
+ Model 1: Trigger detector (Ollama Cloud)
+         │ accepted
+         ▼
        MemoryEngine ──────────► client + global memories
-              │
-              ▼
-           Ollama
-              │
-              ▼
+         │
+         ▼
+ Model 2: Insight generator (Ollama Cloud)
+         │
+         ▼
+ Deterministic freshness validator
+         │ current
+         ▼
         insight event
               │
               ▼
@@ -823,6 +829,12 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `OLLAMA_BASE_URL` | `http://192.168.68.112:11434` | Ollama HTTP endpoint |
 | `OLLAMA_MODEL` | `glm-5.3-flash:cloud` | Exact Ollama model name |
 | `OLLAMA_TIMEOUT_SECONDS` | `45` | Model request timeout |
+| `TRIGGER_OLLAMA_BASE_URL` | empty | Model 1 endpoint; empty inherits `OLLAMA_BASE_URL` |
+| `TRIGGER_OLLAMA_MODEL` | empty | Model 1 name; empty inherits `OLLAMA_MODEL` |
+| `TRIGGER_OLLAMA_TIMEOUT_SECONDS` | `20` | Trigger-decision timeout |
+| `INSIGHT_OLLAMA_BASE_URL` | empty | Model 2 endpoint; empty inherits `OLLAMA_BASE_URL` |
+| `INSIGHT_OLLAMA_MODEL` | empty | Model 2 name; empty inherits `OLLAMA_MODEL` |
+| `INSIGHT_OLLAMA_TIMEOUT_SECONDS` | `30` | Insight-generation timeout |
 | `AUTH_USERNAME` | `homebuddy` | Username accepted by the signin endpoint |
 | `AUTH_PASSWORD` | `123456` | Password accepted by the signin endpoint; change before deployment |
 | `AUTH_STATIC_TOKEN` | empty | Optional non-expiring pre-shared bearer token for clients that skip sign-in |
@@ -836,6 +848,8 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `PARTIAL_INSIGHT_COOLDOWN_SECONDS` | `12` | Cooldown for high-value cards found in partial speech; final cards retain `INSIGHT_COOLDOWN_SECONDS` |
 | `PARTIAL_INSIGHT_MIN_WORDS` | `7` | Minimum stable words required before evaluating provisional speech |
 | `PARTIAL_INSIGHT_MIN_CONFIDENCE` | `0.85` | Minimum confidence required to display a provisional card |
+| `PARTIAL_INSIGHT_MAX_AGE_SECONDS` | `8` | Discard a provisional card when generation finishes too late |
+| `FINAL_INSIGHT_MAX_AGE_SECONDS` | `30` | Discard a final card when generation finishes too late |
 | `INSIGHT_TARGET_CHARACTERS` | `150` | Soft target for each glasses card; shorter complete answers remain valid |
 | `INSIGHT_MAX_CHARACTERS` | `220` | Hard UI safety ceiling; oversized output is cut at a sentence or word boundary |
 | `TRANSCRIPT_WINDOW_SECONDS` | `90` | Rolling context age |

@@ -18,6 +18,16 @@ class Settings(BaseSettings):
     ollama_model: str = "glm-5.3-flash:cloud"
     ollama_timeout_seconds: float = 45.0
 
+    # Proactive AI v2 keeps the two inference stages independently tunable.
+    # Empty values deliberately fall back to the legacy OLLAMA_* settings so
+    # existing deployments continue to work without an immediate migration.
+    trigger_ollama_base_url: str = ""
+    trigger_ollama_model: str = ""
+    trigger_ollama_timeout_seconds: float = 20.0
+    insight_ollama_base_url: str = ""
+    insight_ollama_model: str = ""
+    insight_ollama_timeout_seconds: float = 30.0
+
     database_path: str = "/data/homebuddy.db"
     transcript_window_seconds: int = 90
     transcript_max_items: int = 40
@@ -30,12 +40,30 @@ class Settings(BaseSettings):
     partial_insight_cooldown_seconds: float = Field(default=12.0, ge=0, le=300)
     partial_insight_min_words: int = Field(default=7, ge=1, le=100)
     partial_insight_min_confidence: float = Field(default=0.85, ge=0, le=1)
+    partial_insight_max_age_seconds: float = Field(default=8.0, ge=0.5, le=120)
+    final_insight_max_age_seconds: float = Field(default=30.0, ge=1, le=300)
     insight_target_characters: int = Field(default=150, ge=40, le=500)
     insight_max_characters: int = Field(default=220, ge=80, le=1_000)
     memory_result_limit: int = 5
     session_analysis_max_characters: int = Field(
         default=60_000, ge=5_000, le=1_000_000
     )
+
+    @property
+    def resolved_trigger_base_url(self) -> str:
+        return self.trigger_ollama_base_url or self.ollama_base_url
+
+    @property
+    def resolved_trigger_model(self) -> str:
+        return self.trigger_ollama_model or self.ollama_model
+
+    @property
+    def resolved_insight_base_url(self) -> str:
+        return self.insight_ollama_base_url or self.ollama_base_url
+
+    @property
+    def resolved_insight_model(self) -> str:
+        return self.insight_ollama_model or self.ollama_model
 
 
 @lru_cache

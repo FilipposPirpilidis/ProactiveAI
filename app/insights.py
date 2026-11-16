@@ -52,6 +52,7 @@ it does not schedule reminders or perform actions. Say only that the LATEST UTTE
 or noted. Never say it was set, scheduled, completed, or sent, and never append another remembered task.
 
 Intent: {detection.intent}
+Trigger reason: {detection.reason}
 Relevant memories:
 {memory_text}
 

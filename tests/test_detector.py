@@ -194,9 +194,9 @@ async def test_conversate_mode_can_trigger_on_a_statement() -> None:
 
     assert result.should_trigger is True
     assert result.intent == "fact_check"
-    assert result.insight == "Correction: Canberra is the capital of Australia."
+    assert result.insight is None
     assert "LATEST UTTERANCE (the only trigger):" in ollama.last_prompt
-    assert "Aim for about 150 characters" in ollama.last_prompt
+    assert "trigger-detection stage only" in ollama.last_prompt
     assert "I think Sydney is the capital of Australia." in ollama.last_prompt
 
 
@@ -227,7 +227,7 @@ async def test_conversate_explains_a_short_technical_acronym_without_a_question(
 
     assert result.should_trigger is True
     assert result.intent == "definition"
-    assert result.insight is not None and result.insight.startswith("RLHF")
+    assert result.insight is None
     assert "proactively trigger" in ollama.last_prompt
     assert "required output language is English" in ollama.last_prompt
 
@@ -248,7 +248,7 @@ async def test_conversate_can_infer_a_named_person_role_from_conversation_clues(
 
     assert result.should_trigger is True
     assert result.intent == "entity_context"
-    assert result.insight is not None and "appears to be" in result.insight
+    assert result.insight is None
     assert "Require at least two conversation-supported clues" in ollama.last_prompt
     assert "Never identify a person from a name alone" in ollama.last_prompt
 
@@ -286,7 +286,7 @@ async def test_short_answer_to_previous_question_is_checked_and_corrected() -> N
     assert result.should_trigger is True
     assert result.intent == "fact_check"
     assert result.answer_verification is True
-    assert result.insight == "Correction: 54 + 54 is 108."
+    assert result.insight is None
     assert "immediately preceding conversation turn" in ollama.last_prompt
     assert "including a number or yes/no" in ollama.last_prompt
 

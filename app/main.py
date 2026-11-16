@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, WebSocket, WebSocketDisconnect, status
@@ -10,6 +10,7 @@ from app.auth import AuthService
 from app.buffer import PartialTranscriptAssembler, TranscriptBuffer
 from app.config import Settings, get_settings
 from app.detector import ProactiveDetector
+from app.freshness import InsightFreshnessValidator
 from app.insights import InsightEngine, captured_insight_text, sanitize_insight_text
 from app.memory import MemoryEngine
 from app.models import (
@@ -41,10 +42,15 @@ class ServiceContainer:
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
         self.rules = ConversateRules.load(settings.conversate_rules_path)
-        self.ollama = OllamaClient(
-            settings.ollama_base_url,
-            settings.ollama_model,
-            settings.ollama_timeout_seconds,
+        self.trigger_ollama = OllamaClient(
+            settings.resolved_trigger_base_url,
+            settings.resolved_trigger_model,
+            settings.trigger_ollama_timeout_seconds,
+        )
+        self.insight_ollama = OllamaClient(
+            settings.resolved_insight_base_url,
+            settings.resolved_insight_model,
+            settings.insight_ollama_timeout_seconds,
         )
         self.memory = MemoryEngine(settings.database_path, settings.memory_result_limit)
         self.auth = AuthService(
@@ -55,7 +61,7 @@ class ServiceContainer:
             settings.auth_static_token,
         )
         self.detector = ProactiveDetector(
-            self.ollama,
+            self.trigger_ollama,
             settings.detector_mode,
             settings.detector_threshold,
             settings.insight_cooldown_seconds,
@@ -64,15 +70,16 @@ class ServiceContainer:
             self.rules.instructions,
         )
         self.insights = InsightEngine(
-            self.ollama,
+            self.insight_ollama,
             settings.insight_target_characters,
             settings.insight_max_characters,
             self.rules.instructions,
         )
         self.session_analyzer = SessionAnalyzer(
-            self.ollama,
+            self.insight_ollama,
             settings.insight_max_characters,
         )
+        self.freshness = InsightFreshnessValidator(settings.insight_max_characters)
         self.analysis_tasks: dict[str, asyncio.Task[None]] = {}
 
     async def wait_for_analysis_tasks(self) -> None:
@@ -93,10 +100,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     await services.wait_for_analysis_tasks()
     await services.memory.close()
-    await services.ollama.close()
+    await services.trigger_ollama.close()
+    await services.insight_ollama.close()
 
 
-app = FastAPI(title="HomeBuddy Proactive AI", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="HomeBuddy Proactive AI", version="2.0.0", lifespan=lifespan)
 
 
 class PartialInsightWorker:
@@ -171,6 +179,7 @@ class PartialInsightWorker:
             logger.exception("Partial insight worker failed session=%s", self.session_id)
 
     async def _evaluate(self, revision: int, transcript: TranscriptMessage) -> None:
+        evaluation_started = asyncio.get_running_loop().time()
         try:
             latest_segment = self._unseen_segment(transcript.text)
             if (
@@ -256,18 +265,32 @@ class PartialInsightWorker:
             )
             async with self.insight_lock:
                 current = self._latest
-                if (
-                    not current
-                    or current[0] < revision
-                    or not self._compatible(transcript, current[1])
-                    or (
-                        detection.intent != "question"
-                        and not detection.answer_verification
-                        and self.services.detector.is_repeated_insight(
-                            self.session_id, insight.text
-                        )
+                source_is_current = bool(
+                    current
+                    and current[0] >= revision
+                    and self._compatible(transcript, current[1])
+                )
+                freshness = self.services.freshness.validate(
+                    insight,
+                    detection,
+                    elapsed_seconds=(
+                        asyncio.get_running_loop().time() - evaluation_started
+                    ),
+                    max_age_seconds=(
+                        self.services.settings.partial_insight_max_age_seconds
+                    ),
+                    source_is_current=source_is_current,
+                    repeated=self.services.detector.is_repeated_insight(
+                        self.session_id, insight.text
+                    ),
+                )
+                if not freshness.accepted:
+                    logger.info(
+                        "Partial insight discarded session=%s event=%s reason=%s",
+                        self.session_id,
+                        transcript.event_id,
+                        freshness.reason,
                     )
-                ):
                     return
 
                 await self.services.memory.store_insight(insight)
@@ -329,11 +352,22 @@ class FinalTranscriptWorker:
         self.services = services
         self.client_id = client_id
         self.session_id = session_id
-        self._queue: asyncio.Queue[tuple[TranscriptMessage, str]] = asyncio.Queue()
+        self._queue: asyncio.Queue[tuple[int, TranscriptMessage, str]] = asyncio.Queue()
+        self._activity_revision = 0
         self._task = asyncio.create_task(self._run())
 
-    def submit(self, transcript: TranscriptMessage, conversation: str) -> None:
-        self._queue.put_nowait((transcript, conversation))
+    def observe_transcript(self) -> int:
+        """Advance freshness for every partial or final received on the socket."""
+        self._activity_revision += 1
+        return self._activity_revision
+
+    def submit(
+        self,
+        transcript: TranscriptMessage,
+        conversation: str,
+        activity_revision: int,
+    ) -> None:
+        self._queue.put_nowait((activity_revision, transcript, conversation))
 
     async def close(self) -> None:
         self._task.cancel()
@@ -342,7 +376,7 @@ class FinalTranscriptWorker:
     async def _run(self) -> None:
         try:
             while True:
-                transcript, conversation = await self._queue.get()
+                revision, transcript, conversation = await self._queue.get()
                 try:
                     await _process_final_transcript(
                         self.websocket,
@@ -353,6 +387,7 @@ class FinalTranscriptWorker:
                         self.session_id,
                         transcript,
                         conversation,
+                        lambda: revision == self._activity_revision,
                     )
                 except Exception:
                     logger.exception(
@@ -399,9 +434,18 @@ async def ready() -> dict[str, str]:
     services: ServiceContainer = app.state.services
     if not services.auth.configured:
         raise HTTPException(status_code=503, detail="Authentication is not configured")
-    if not await services.ollama.health():
-        raise HTTPException(status_code=503, detail="Ollama is unavailable")
-    return {"status": "ready", "model": services.settings.ollama_model}
+    trigger_ready, insight_ready = await asyncio.gather(
+        services.trigger_ollama.health(),
+        services.insight_ollama.health(),
+    )
+    if not trigger_ready or not insight_ready:
+        raise HTTPException(status_code=503, detail="Ollama inference pipeline is unavailable")
+    return {
+        "status": "ready",
+        "pipeline_version": "2.0",
+        "trigger_model": services.settings.resolved_trigger_model,
+        "insight_model": services.settings.resolved_insight_model,
+    }
 
 
 @app.post("/v1/auth/signin")
@@ -579,7 +623,10 @@ async def websocket_endpoint(
             "type": "ready",
             "client_id": client_id,
             "session_id": session_id,
-            "model": services.settings.ollama_model,
+            "model": services.settings.resolved_insight_model,
+            "trigger_model": services.settings.resolved_trigger_model,
+            "insight_model": services.settings.resolved_insight_model,
+            "pipeline_version": "2.0",
             "detector_mode": services.settings.detector_mode,
             "language_policy": services.rules.language_policy,
             "output_language": language_resolver.current,
@@ -661,6 +708,7 @@ async def _handle_transcript(
     session_id: str,
     transcript: TranscriptMessage,
 ) -> None:
+    activity_revision = final_worker.observe_transcript()
     if not transcript.is_final:
         await _send_json(websocket, send_lock,
             {
@@ -685,7 +733,7 @@ async def _handle_transcript(
     await services.memory.store_transcript(session_id, transcript)
     await services.memory.clear_partial(session_id)
     buffer.add(transcript)
-    final_worker.submit(transcript, buffer.latest_text(6))
+    final_worker.submit(transcript, buffer.latest_text(6), activity_revision)
 
 
 async def _process_final_transcript(
@@ -697,7 +745,9 @@ async def _process_final_transcript(
     session_id: str,
     transcript: TranscriptMessage,
     conversation: str,
+    source_is_current: Callable[[], bool] = lambda: True,
 ) -> None:
+    evaluation_started = asyncio.get_running_loop().time()
     memories = await services.memory.relevant(client_id, conversation)
     memory_context = "\n".join(f"- {item.content}" for item in memories)
     people_context = await services.memory.people_context(session_id)
@@ -767,12 +817,22 @@ async def _process_final_transcript(
     )
 
     async with insight_lock:
-        if (
-            detection.intent != "question"
-            and not detection.answer_verification
-            and services.detector.is_repeated_insight(session_id, insight.text)
-        ):
-            await _send_ack(websocket, send_lock, transcript.event_id, False, "repeated_insight")
+        freshness = services.freshness.validate(
+            insight,
+            detection,
+            elapsed_seconds=asyncio.get_running_loop().time() - evaluation_started,
+            max_age_seconds=services.settings.final_insight_max_age_seconds,
+            source_is_current=source_is_current(),
+            repeated=services.detector.is_repeated_insight(session_id, insight.text),
+        )
+        if not freshness.accepted:
+            await _send_ack(
+                websocket,
+                send_lock,
+                transcript.event_id,
+                False,
+                freshness.reason,
+            )
             return
 
         await _send_ack(websocket, send_lock, transcript.event_id, True, detection.reason)
