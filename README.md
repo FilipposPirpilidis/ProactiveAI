@@ -459,7 +459,7 @@ The server first sends:
   "partial_insights": true,
   "partial_insight_debounce_ms": 650,
   "partial_insight_interval_ms": 2000,
-  "partial_insight_min_words": 7,
+  "partial_insight_min_words": 5,
   "partial_insight_min_confidence": 0.85,
   "partial_technical_min_confidence": 0.70,
   "profile_detection": false,
@@ -978,7 +978,7 @@ span remains part of the active rolling topic.
 | `PARTIAL_INSIGHT_DEBOUNCE_MS` | `650` | Delay used to coalesce rapidly changing partials in `conversate` mode |
 | `PARTIAL_INSIGHT_INTERVAL_MS` | `2000` | Minimum start-to-start partial evaluation interval during continuous speech |
 | `PARTIAL_INSIGHT_COOLDOWN_SECONDS` | `12` | Cooldown for high-value cards found in partial speech; final cards retain `INSIGHT_COOLDOWN_SECONDS` |
-| `PARTIAL_INSIGHT_MIN_WORDS` | `7` | Minimum stable words required before evaluating provisional speech |
+| `PARTIAL_INSIGHT_MIN_WORDS` | `5` | Minimum stable words required before evaluating provisional speech |
 | `PARTIAL_INSIGHT_MIN_CONFIDENCE` | `0.85` | Minimum confidence required to display a provisional card |
 | `PARTIAL_TECHNICAL_MIN_CONFIDENCE` | `0.70` | Lower gate used only for stable mechanism, implementation, architecture, and tradeoff cards during continuous speech |
 | `PARTIAL_INSIGHT_MAX_AGE_SECONDS` | `8` | Discard a provisional card when generation finishes too late |

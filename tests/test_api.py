@@ -468,7 +468,7 @@ def test_continuous_technical_partial_can_emit_without_question_or_pause(
                 {
                     "type": "transcript",
                     "event_id": "partial-1",
-                    "text": "I think Sydney is the capital of Australia.",
+                    "text": "Sydney is the capital of Australia.",
                     "is_final": False,
                 }
             )
@@ -489,7 +489,7 @@ def test_continuous_technical_partial_can_emit_without_question_or_pause(
             assert insight["source"] == "partial"
             assert insight["text"].startswith("Correction: Canberra")
             assert detector.triggers == [
-                ("chat-partial", "I think Sydney is the capital of Australia.")
+                ("chat-partial", "Sydney is the capital of Australia.")
             ]
 
     get_settings.cache_clear()
