@@ -84,6 +84,10 @@ Use one of these intents when triggered:
 - definition: an unexplained specialist term or acronym
 - fact_check: a material false stable claim, only with very high confidence
 
+A fact check does not require a question. A material standalone assertion in the active conversation
+is eligible when it is objectively false and correctable from stable general knowledge. Correct only
+the specific error; do not fact-check opinions, predictions, personal claims, or current facts.
+
 For a hypothesis, use `knowledge_scope` `uncertain` and make the uncertainty explicit in `reason`;
 the final card will be written as a possibility, not a fact. For stable platform/API behavior use
 `stable`. Never invent project-specific behavior, configuration, payloads, deadlines, ownership, or

@@ -47,6 +47,8 @@ technical_term_aliases:
 - Do not react to incomplete, incoherent, or obviously mistranscribed speech.
 - Correct a speaker only when the factual error is material and verifiable from stable general
   knowledge with very high confidence.
+- A correction does not require a question or a request for verification. Correct a materially false
+  standalone assertion when stable general knowledge supports the correction with very high confidence.
 - Never fact-check fictional plot events, opinions, personal claims, predictions, or information
   that requires a current web lookup or live data. Stay silent when a claim is already correct.
 - Use the deterministic calculator for explicit arithmetic.

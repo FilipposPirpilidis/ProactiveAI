@@ -940,6 +940,16 @@ docker compose --profile simulator run --rm \
   simulator
 ```
 
+The standalone-correction regression verifies that a materially false stable assertion is corrected
+without a preceding question or finalized transcript:
+
+```bash
+docker compose --profile simulator run --rm \
+  -e SIMULATOR_TEXT_FILE=/input/standalone-fact-correction.txt \
+  -e SIMULATOR_LANGUAGE=en \
+  simulator
+```
+
 Questions and high-priority fast-lane signals may bypass cooldown. The fast lane only allows
 the latest utterance to trigger. The topic observer can use an earlier supporting span while that
 span remains part of the active rolling topic.

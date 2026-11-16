@@ -395,6 +395,9 @@ def test_question_observer_emits_when_another_speaker_answered_correctly(
             assert insight["event_id"] == "question-1"
             assert insight["intent"] == "question"
             assert insight["text"] == "Bring your ID and the signed form."
+            # Let the question worker finish its post-send bookkeeping before
+            # TestClient closes and cancels the WebSocket task group.
+            time.sleep(0.05)
 
     get_settings.cache_clear()
 

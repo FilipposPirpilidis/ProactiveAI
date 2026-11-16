@@ -213,6 +213,7 @@ async def test_conversate_mode_can_trigger_on_a_statement() -> None:
     assert result.insight is None
     assert "LATEST UTTERANCE (the only trigger):" in ollama.last_prompt
     assert "trigger-detection stage only" in ollama.last_prompt
+    assert "standalone declarative claim is eligible" in ollama.last_prompt
     assert "I think Sydney is the capital of Australia." in ollama.last_prompt
 
 

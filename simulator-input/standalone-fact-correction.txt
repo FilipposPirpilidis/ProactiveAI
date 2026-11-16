@@ -1,0 +1,4 @@
+# A false stable assertion must be corrected without a question or final transcript.
+PARTIAL: Sydney is the capital of Australia.
+WAIT: 5
+EXPECT_INSIGHT: Canberra
