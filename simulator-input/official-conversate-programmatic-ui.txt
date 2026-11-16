@@ -1,0 +1,21 @@
+# Regression scenario distilled from the official Conversate export about
+# programmatic UIKit. Run it with SIMULATOR_LANGUAGE=el. Each group should
+# produce a distinct, useful technical angle rather than a paraphrase.
+FINAL: We use a code-based UI and do not work with storyboards very much.
+FINAL: There is a different lifecycle initializer when the view comes from a NIP or storyboard.
+WAIT: 5
+EXPECT_INSIGHT: NIB
+
+FINAL: Can we use a custom view instead of the default view inside a view controller?
+FINAL: We want to split the representation and move all UI parts into that custom view.
+WAIT: 5
+EXPECT_INSIGHT: custom view
+
+FINAL: A view controller has its default self.view, so can we replace it?
+FINAL: We can switch it using the load view function.
+WAIT: 5
+EXPECT_INSIGHT: loadView
+
+FINAL: The custom view should stay a pure view while the controller handles delegates and data sources.
+WAIT: 5
+EXPECT_INSIGHT: delegate

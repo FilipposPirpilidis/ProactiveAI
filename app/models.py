@@ -37,6 +37,12 @@ class FeedbackMessage(BaseModel):
     useful: bool
 
 
+class InsightReceiptMessage(BaseModel):
+    type: Literal["insight_receipt"]
+    insight_id: str = Field(min_length=1, max_length=200)
+    status: Literal["received", "displayed"]
+
+
 class PersonObservation(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     summary: str = Field(min_length=1, max_length=300)
@@ -57,7 +63,7 @@ class Detection(BaseModel):
     confidence: float = Field(ge=0, le=1)
     reason: str
     intent: str = "none"
-    insight: str | None = Field(default=None, max_length=500)
+    insight: str | None = Field(default=None, max_length=1_000)
     people: list[PersonObservation] = Field(default_factory=list, max_length=5)
     answer_verification: bool = False
     answer_status: Literal[
@@ -112,6 +118,9 @@ class Insight(BaseModel):
 
 class StoredInsight(Insight):
     useful: bool | None = None
+    delivered_at: datetime | None = None
+    received_at: datetime | None = None
+    displayed_at: datetime | None = None
 
 
 class SignificantConversationPart(BaseModel):

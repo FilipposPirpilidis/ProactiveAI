@@ -460,7 +460,8 @@ The server first sends:
   "partial_insight_debounce_ms": 650,
   "partial_insight_interval_ms": 2000,
   "partial_insight_min_words": 7,
-  "partial_insight_min_confidence": 0.85
+  "partial_insight_min_confidence": 0.85,
+  "insight_receipts": ["received", "displayed"]
 }
 ```
 
@@ -593,9 +594,39 @@ Client flow:
 2. Send events in chronological order.
 3. For `ack.triggered: false`, continue listening. A partial ACK can still be followed asynchronously by a partial insight.
 4. For `ack.triggered: true`, wait for the next `insight` or `error`.
-5. Render `insight.text` and retain `insight_id` for feedback.
+5. On receiving an insight, send a `received` receipt. Render `insight.text`, then send a `displayed` receipt only after the card is actually visible. Retain `insight_id` for feedback.
 6. Treat inbound events independently rather than assuming strict request/response ordering; use `event_id` and `source` to correlate partial insights.
 7. Reconnect with backoff after failure, reusing the session only when continuing the same conversation.
+
+### Insight delivery receipts
+
+The server records `delivered_at` only after its WebSocket send completes. That proves the
+server handed the event to the connection, not that the phone rendered it. An updated client
+should provide the two remaining stages:
+
+```json
+{
+  "type": "insight_receipt",
+  "insight_id": "29c025a8-6b64-4572-9568-ccfdc3f875d4",
+  "status": "received"
+}
+```
+
+Send `status: "displayed"` after the insight is visibly presented on the phone or glasses.
+`displayed` also implies `received`, so sending only the displayed receipt is valid when both
+events happen together. The server confirms each saved stage:
+
+```json
+{
+  "type": "insight_receipt_saved",
+  "insight_id": "29c025a8-6b64-4572-9568-ccfdc3f875d4",
+  "status": "displayed"
+}
+```
+
+Receipts must use an insight from the same `session_id`; otherwise the server returns
+`{"type":"error","code":"unknown_insight"}`. Older clients remain compatible and can
+ignore `ready.insight_receipts`, but their UI delivery cannot be confirmed by the backend.
 
 ### Ping and feedback
 
@@ -867,6 +898,17 @@ docker compose --profile simulator run --rm \
   simulator
 ```
 
+The more responsive programmatic-UIKit regression checks four distinct technical angles from one
+short topic. The topic lane selects and writes each card in one model call, avoiding the former
+second generation round trip:
+
+```bash
+docker compose --profile simulator run --rm \
+  -e SIMULATOR_TEXT_FILE=/input/official-conversate-programmatic-ui.txt \
+  -e SIMULATOR_LANGUAGE=el \
+  simulator
+```
+
 Questions and high-priority fast-lane signals may bypass cooldown. The fast lane only allows
 the latest utterance to trigger. The topic observer can use an earlier supporting span while that
 span remains part of the active rolling topic.
@@ -900,15 +942,15 @@ span remains part of the active rolling topic.
 | `PARTIAL_INSIGHT_MAX_AGE_SECONDS` | `8` | Discard a provisional card when generation finishes too late |
 | `FINAL_INSIGHT_MAX_AGE_SECONDS` | `30` | Discard a final card when generation finishes too late |
 | `TOPIC_OBSERVER_ENABLED` | `true` | Enable the finalized multi-turn topic-observer lane |
-| `TOPIC_OBSERVER_DEBOUNCE_MS` | `4000` | Wait for a short stable multi-turn span before topic evaluation |
-| `TOPIC_OBSERVER_INTERVAL_MS` | `8000` | Minimum start-to-start interval between topic evaluations |
-| `TOPIC_OBSERVER_MIN_WORDS` | `35` | Minimum active-topic context before evaluation |
-| `TOPIC_OBSERVER_MIN_CONFIDENCE` | `0.86` | Minimum confidence for a topic card |
+| `TOPIC_OBSERVER_DEBOUNCE_MS` | `1500` | Wait briefly for a stable multi-turn span before topic evaluation |
+| `TOPIC_OBSERVER_INTERVAL_MS` | `3500` | Minimum start-to-start interval between topic evaluations |
+| `TOPIC_OBSERVER_MIN_WORDS` | `18` | Minimum active-topic context before evaluation |
+| `TOPIC_OBSERVER_MIN_CONFIDENCE` | `0.78` | Base threshold for safe definitions/context; implementation, diagnosis, risk, recap, and fact checks retain progressively higher code-enforced floors up to `0.95` |
 | `TOPIC_OBSERVER_MAX_AGE_SECONDS` | `90` | Maximum generation age while its source remains in the active topic |
 | `TOPIC_OBSERVER_CONTEXT_ITEMS` | `24` | Maximum finalized utterances supplied to the topic observer |
 | `QUESTION_OBSERVER_ENABLED` | `true` | Enable finalized question/answer tracking in `conversate` mode |
 | `QUESTION_INSIGHT_POLICY` | `always` | `always`, `unanswered_or_incorrect`, or `incorrect_only` |
-| `QUESTION_ANSWER_GRACE_SECONDS` | `2` | Brief wait for a human answer before evaluating the question |
+| `QUESTION_ANSWER_GRACE_SECONDS` | `1.5` | Brief wait for a human answer before evaluating the question |
 | `QUESTION_TRACKING_SECONDS` | `15` | Maximum age of turns retained by the question observer |
 | `QUESTION_ANSWER_CONFIDENCE` | `0.70` | Minimum confidence for answering an unanswered or correctly answered stable question |
 | `QUESTION_VERIFICATION_CONFIDENCE` | `0.85` | Higher confidence required to declare a human answer partial or incorrect |

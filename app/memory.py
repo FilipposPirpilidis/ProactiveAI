@@ -75,6 +75,7 @@ class MemoryEngine:
                 ON auth_tokens(expires_at);
             """
         )
+        await self._ensure_insight_delivery_columns()
         await self._db.execute(
             "UPDATE session_analyses SET status='failed', payload=NULL, "
             "error='Analysis generation was interrupted; reconnect and disconnect the chat to retry', "
@@ -82,6 +83,17 @@ class MemoryEngine:
             (datetime.now(timezone.utc).isoformat(),),
         )
         await self._db.commit()
+
+    async def _ensure_insight_delivery_columns(self) -> None:
+        """Add delivery tracking to databases created by earlier releases."""
+        assert self._db
+        cursor = await self._db.execute("PRAGMA table_info(insights)")
+        columns = {str(row["name"]) for row in await cursor.fetchall()}
+        for column in ("delivered_at", "received_at", "displayed_at"):
+            if column not in columns:
+                await self._db.execute(
+                    f"ALTER TABLE insights ADD COLUMN {column} TEXT"
+                )
 
     async def close(self) -> None:
         if self._db:
@@ -410,11 +422,50 @@ class MemoryEngine:
     async def session_insights(self, session_id: str) -> list[StoredInsight]:
         assert self._db
         cursor = await self._db.execute(
-            "SELECT id, session_id, text, intent, confidence, useful, created_at "
+            "SELECT id, session_id, text, intent, confidence, useful, created_at, "
+            "delivered_at, received_at, displayed_at "
             "FROM insights WHERE session_id = ? ORDER BY created_at, id",
             (session_id,),
         )
         return [StoredInsight.model_validate(dict(row)) for row in await cursor.fetchall()]
+
+    async def mark_insight_delivered(self, insight_id: str) -> bool:
+        assert self._db
+        delivered_at = datetime.now(timezone.utc).isoformat()
+        cursor = await self._db.execute(
+            "UPDATE insights SET delivered_at = COALESCE(delivered_at, ?) WHERE id = ?",
+            (delivered_at, insight_id),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def record_insight_receipt(
+        self,
+        session_id: str,
+        insight_id: str,
+        receipt_status: str,
+    ) -> bool:
+        """Record an iOS receipt without allowing cross-session updates."""
+        assert self._db
+        recorded_at = datetime.now(timezone.utc).isoformat()
+        if receipt_status == "received":
+            sql = (
+                "UPDATE insights SET received_at = COALESCE(received_at, ?) "
+                "WHERE id = ? AND session_id = ?"
+            )
+            values = (recorded_at, insight_id, session_id)
+        elif receipt_status == "displayed":
+            sql = (
+                "UPDATE insights SET received_at = COALESCE(received_at, ?), "
+                "displayed_at = COALESCE(displayed_at, ?) "
+                "WHERE id = ? AND session_id = ?"
+            )
+            values = (recorded_at, recorded_at, insight_id, session_id)
+        else:
+            raise ValueError(f"Unsupported insight receipt status: {receipt_status}")
+        cursor = await self._db.execute(sql, values)
+        await self._db.commit()
+        return cursor.rowcount > 0
 
     async def record_feedback(self, insight_id: str, useful: bool) -> None:
         assert self._db

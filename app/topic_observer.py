@@ -26,10 +26,14 @@ class TopicObserver:
         ollama: OllamaClient,
         rules_instructions: str = "",
         technical_term_aliases: dict[str, list[str]] | None = None,
+        target_characters: int = 260,
+        max_characters: int = 340,
     ) -> None:
         self.ollama = ollama
         self.rules_instructions = rules_instructions.strip()
         self.technical_term_aliases = technical_term_aliases or {}
+        self.target_characters = target_characters
+        self.max_characters = max_characters
 
     async def detect(
         self,
@@ -49,8 +53,15 @@ conversation below. Select at most ONE card: the most useful new technical fact,
 diagnostic hypothesis, troubleshooting step, platform distinction, implementation option,
 material constraint, or concise decision/action clarification that would help the wearer now.
 
+Return the COMPLETE user-visible card in `insight` in the required output language. Do not return
+an outline or instructions for another model. Aim for about {self.target_characters} characters and
+never exceed {self.max_characters}. Begin topic-observer cards with a short useful heading followed
+by ` — `. For a diagnostic hypothesis, use explicitly cautious language in the card itself.
+
 Good cards do more than repeat the speakers. They can connect several turns and add stable general
-knowledge. Examples include explaining how WorkManager and Doze affect an Android sync test,
+knowledge. One concrete adjacent technical fact is eligible when it directly helps the listener
+follow the emerging topic, even if the speaker did not explicitly ask for it. Examples include
+explaining how WorkManager and Doze affect an Android sync test,
 suggesting a payload/type comparison when an integer field fails but a boolean succeeds, or naming
 the relevant API mechanism when a team discusses automating file upload.
 
@@ -71,6 +82,11 @@ the final card will be written as a possibility, not a fact. For stable platform
 current facts. If the answer needs live web data, private documentation, or missing project details,
 set `requires_current_information` true and do not trigger. Ignore greetings, status-only updates,
 jokes, broken translation, incomplete fragments, and ordinary narration with no concrete addition.
+
+Technical ASR can phonetically corrupt names and acronyms, for example `NIP` when the surrounding
+iOS discussion clearly means `NIB`, or omit a letter from `MVVM`. Resolve a canonical technical term
+only when the surrounding platform and concept make the correction unambiguous. Keep `source_text`
+as the smallest exact excerpt actually spoken. If the correction is ambiguous, stay silent.
 
 The source may occur before the final sentence. It is valid while it remains part of the active topic.
 Copy the smallest supporting excerpt into `source_text`. Return a canonical `topic`, a canonical
@@ -94,14 +110,13 @@ Recent active-topic conversation:
 {conversation}
 
 Return JSON only using exactly this structure:
-{{"should_trigger":bool,"confidence":0..1,"reason":"short", "intent":"technical_context|diagnostic_hypothesis|troubleshooting_step|platform_difference|implementation_option|risk_or_constraint|conversation_recap|definition|fact_check|none","insight":null,"people":[],"answer_verification":false,"subject":"canonical subject or null","topic":"active topic or null","angle":"specific non-generic angle or null","source_text":"small supporting excerpt or null","knowledge_scope":"stable|current|personal|uncertain|fictional_context","requires_current_information":bool,"discourse_mode":"conversation|lecture|narration|fiction|unknown"}}"""
+{{"should_trigger":bool,"confidence":0..1,"reason":"short", "intent":"technical_context|diagnostic_hypothesis|troubleshooting_step|platform_difference|implementation_option|risk_or_constraint|conversation_recap|definition|fact_check|none","insight":"finished user-visible card or null","people":[],"answer_verification":false,"subject":"canonical subject or null","topic":"active topic or null","angle":"specific non-generic angle or null","source_text":"small exact supporting excerpt or null","knowledge_scope":"stable|current|personal|uncertain|fictional_context","requires_current_information":bool,"discourse_mode":"conversation|lecture|narration|fiction|unknown"}}"""
         try:
             raw = await self.ollama.chat(
                 [{"role": "user", "content": prompt}],
                 json_output=True,
             )
             detection = Detection.model_validate(json.loads(raw))
-            detection.insight = None
             if detection.should_trigger and detection.intent not in self.ALLOWED_INTENTS:
                 return Detection(
                     should_trigger=False,
@@ -109,7 +124,10 @@ Return JSON only using exactly this structure:
                     reason="unsupported_topic_intent",
                 )
             if detection.should_trigger and (
-                not detection.subject or not detection.angle or not detection.source_text
+                not detection.subject
+                or not detection.angle
+                or not detection.source_text
+                or not detection.insight
             ):
                 return Detection(
                     should_trigger=False,

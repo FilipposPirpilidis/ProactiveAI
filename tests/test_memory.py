@@ -1,5 +1,37 @@
+import aiosqlite
+
 from app.memory import MemoryEngine
 from app.models import Insight, PersonObservation, SessionAnalysisResponse, TranscriptMessage
+
+
+async def test_adds_delivery_columns_to_existing_database(tmp_path) -> None:
+    database_path = str(tmp_path / "legacy.db")
+    async with aiosqlite.connect(database_path) as database:
+        await database.execute(
+            "CREATE TABLE insights ("
+            "id TEXT PRIMARY KEY, session_id TEXT NOT NULL, text TEXT NOT NULL, "
+            "intent TEXT NOT NULL, confidence REAL NOT NULL, useful INTEGER, "
+            "created_at TEXT NOT NULL)"
+        )
+        await database.commit()
+
+    engine = MemoryEngine(database_path)
+    await engine.initialize()
+    try:
+        await engine.store_insight(
+            Insight(
+                id="migrated",
+                session_id="legacy-session",
+                text="A migrated insight.",
+                intent="context",
+                confidence=0.9,
+            )
+        )
+        assert await engine.mark_insight_delivered("migrated") is True
+        stored = await engine.session_insights("legacy-session")
+        assert stored[0].delivered_at is not None
+    finally:
+        await engine.close()
 
 
 async def test_retrieves_relevant_client_and_global_memories(tmp_path) -> None:
@@ -134,6 +166,20 @@ async def test_restores_latest_displayed_insight(tmp_path) -> None:
             == "Serve approximately one slice of bread per person."
         )
         assert await engine.latest_insight_text("other-chat") is None
+
+        assert await engine.mark_insight_delivered("newer") is True
+        assert await engine.record_insight_receipt(
+            "chat-1", "newer", "displayed"
+        ) is True
+        assert await engine.record_insight_receipt(
+            "other-chat", "newer", "received"
+        ) is False
+
+        stored = await engine.session_insights("chat-1")
+        newer = next(item for item in stored if item.id == "newer")
+        assert newer.delivered_at is not None
+        assert newer.received_at is not None
+        assert newer.displayed_at is not None
     finally:
         await engine.close()
 

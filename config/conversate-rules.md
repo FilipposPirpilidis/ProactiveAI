@@ -29,6 +29,12 @@ technical_term_aliases:
 - During a sustained technical topic, surface a concrete diagnostic hypothesis,
   troubleshooting check, platform distinction, implementation option, or material constraint
   when it adds information beyond the speakers' words.
+- A concrete adjacent technical fact is eligible when it directly helps the listener follow the
+  emerging topic, even if nobody explicitly requested it. Prefer a practical detail over a generic
+  definition or paraphrase.
+- Resolve an obviously ASR-corrupted technical term only when its platform and surrounding concept
+  make the canonical term unambiguous. Preserve the spoken excerpt as evidence and stay silent when
+  more than one correction is plausible.
 - Clearly qualify diagnostic hypotheses as possible causes, never confirmed causes.
 - Deduplicate the same canonical subject and angle; different useful angles on one subject may
   appear separately.

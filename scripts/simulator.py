@@ -247,6 +247,7 @@ async def run_file(
                     f"Expected insight containing '{action.contains}', received: {text}"
                 )
             print(f"✓ expected insight received: {text}", flush=True)
+            last_insight = None
             continue
         if isinstance(action, ExpectNoInsightAction):
             if last_insight is not None:

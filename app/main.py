@@ -18,6 +18,7 @@ from app.memory import MemoryEngine
 from app.models import (
     FeedbackMessage,
     Insight,
+    InsightReceiptMessage,
     PingMessage,
     SessionAnalysisResponse,
     TranscriptMessage,
@@ -78,6 +79,8 @@ class ServiceContainer:
             self.trigger_ollama,
             self.rules.instructions,
             self.rules.technical_term_aliases,
+            settings.insight_target_characters,
+            settings.insight_max_characters,
         )
         self.question_observer = QuestionObserver(
             self.trigger_ollama,
@@ -340,15 +343,18 @@ class PartialInsightWorker:
                     )
                 self._last_insight_snapshot = transcript.text
                 logger.info(
-                    "Partial insight emitted session=%s event=%s insight=%s",
+                    "Partial insight generated session=%s event=%s insight=%s",
                     self.session_id,
                     transcript.event_id,
                     insight.id,
                 )
-                await _send_json(
+                await _deliver_insight(
                     self.websocket,
                     self.send_lock,
-                    _insight_payload(insight, event_id=transcript.event_id, source="partial"),
+                    self.services.memory,
+                    insight,
+                    event_id=transcript.event_id,
+                    source="partial",
                 )
         except asyncio.CancelledError:
             raise
@@ -536,10 +542,14 @@ class TopicInsightWorker:
             detection.knowledge_scope,
             detection.reason,
         )
+        minimum_confidence = self.minimum_confidence(
+            detection.intent,
+            self.services.settings.topic_observer_min_confidence,
+        )
         if (
             not detection.should_trigger
             or detection.confidence
-            < self.services.settings.topic_observer_min_confidence
+            < minimum_confidence
             or detection.requires_current_information
             or self.services.detector.subject_angle_was_explained(
                 self.session_id,
@@ -549,19 +559,21 @@ class TopicInsightWorker:
         ):
             return
 
-        memories = await self.services.memory.relevant(self.client_id, conversation)
-        try:
-            insight = await self.services.insights.generate(
+        # The observer returns the completed card in the same call that selects
+        # it, removing a second cloud round trip from the live topic lane.
+        if not detection.insight:
+            logger.info(
+                "Topic insight discarded session=%s event=%s reason=missing_card_text",
                 self.session_id,
-                conversation,
-                detection,
-                memories,
-                detection.source_text or transcript.text,
-                transcript.language,
+                transcript.event_id,
             )
-        except OllamaError:
-            logger.debug("Topic insight generation unavailable session=%s", self.session_id)
             return
+        insight = Insight(
+            session_id=self.session_id,
+            text=detection.insight,
+            intent=detection.intent,
+            confidence=detection.confidence,
+        )
         insight.text = sanitize_insight_text(
             insight.text,
             transcript.language,
@@ -617,22 +629,37 @@ class TopicInsightWorker:
                 detection.angle,
             )
             logger.info(
-                "Topic insight emitted session=%s event=%s insight=%s",
+                "Topic insight generated session=%s event=%s insight=%s",
                 self.session_id,
                 transcript.event_id,
                 insight.id,
             )
-            await _send_json(
+            await _deliver_insight(
                 self.websocket,
                 self.send_lock,
-                _insight_payload(
-                    insight,
-                    event_id=transcript.event_id,
-                    # Keep the existing client protocol enum compatible. The
-                    # server log identifies this as topic-observer output.
-                    source="final",
-                ),
+                self.services.memory,
+                insight,
+                event_id=transcript.event_id,
+                # Keep the existing client protocol enum compatible. The
+                # server log identifies this as topic-observer output.
+                source="final",
             )
+
+    @staticmethod
+    def minimum_confidence(intent: str, configured_minimum: float) -> float:
+        """Keep risky cards strict while allowing safe explanations sooner."""
+        protected_thresholds = {
+            "definition": 0.78,
+            "technical_context": 0.78,
+            "implementation_option": 0.80,
+            "platform_difference": 0.80,
+            "troubleshooting_step": 0.80,
+            "risk_or_constraint": 0.85,
+            "diagnostic_hypothesis": 0.85,
+            "conversation_recap": 0.85,
+            "fact_check": 0.95,
+        }
+        return max(configured_minimum, protected_thresholds.get(intent, 0.85))
 
     @staticmethod
     def _source_supported(source_text: str, conversation: str) -> bool:
@@ -792,10 +819,11 @@ class QuestionInsightWorker:
                 detection.question_text,
                 snapshot[-1].language,
             )
-        except OllamaError:
-            logger.debug(
+        except OllamaError as exc:
+            logger.warning(
                 "Question insight generation unavailable session=%s",
                 self.session_id,
+                exc_info=exc,
             )
             return
         insight.text = sanitize_insight_text(
@@ -847,16 +875,19 @@ class QuestionInsightWorker:
             self.services.detector.record_insight(self.session_id, insight.text)
             self._remember_handled(detection.question_text)
             logger.info(
-                "Question insight emitted session=%s event=%s status=%s insight=%s",
+                "Question insight generated session=%s event=%s status=%s insight=%s",
                 self.session_id,
                 event_id,
                 detection.answer_status,
                 insight.id,
             )
-            await _send_json(
+            await _deliver_insight(
                 self.websocket,
                 self.send_lock,
-                _insight_payload(insight, event_id=event_id, source="final"),
+                self.services.memory,
+                insight,
+                event_id=event_id,
+                source="final",
             )
 
     def _remember_handled(self, question: str) -> None:
@@ -1126,6 +1157,7 @@ async def websocket_endpoint(
             "question_verification_confidence": (
                 services.settings.question_verification_confidence
             ),
+            "insight_receipts": ["received", "displayed"],
         }
     )
     partial_worker = PartialInsightWorker(
@@ -1162,6 +1194,39 @@ async def websocket_endpoint(
                         websocket, send_lock,
                         {"type": "feedback_saved", "insight_id": feedback.insight_id},
                     )
+                elif message_type == "insight_receipt":
+                    receipt = InsightReceiptMessage.model_validate(payload)
+                    saved = await services.memory.record_insight_receipt(
+                        session_id,
+                        receipt.insight_id,
+                        receipt.status,
+                    )
+                    if not saved:
+                        await _send_json(
+                            websocket,
+                            send_lock,
+                            {
+                                "type": "error",
+                                "code": "unknown_insight",
+                                "insight_id": receipt.insight_id,
+                            },
+                        )
+                    else:
+                        logger.info(
+                            "Insight receipt session=%s insight=%s status=%s",
+                            session_id,
+                            receipt.insight_id,
+                            receipt.status,
+                        )
+                        await _send_json(
+                            websocket,
+                            send_lock,
+                            {
+                                "type": "insight_receipt_saved",
+                                "insight_id": receipt.insight_id,
+                                "status": receipt.status,
+                            },
+                        )
                 elif message_type == "transcript":
                     transcript = TranscriptMessage.model_validate(payload)
                     transcript.language = language_resolver.resolve(
@@ -1385,7 +1450,12 @@ async def _process_final_transcript(
                 detection.subject,
                 detection.angle or "definition",
             )
-        await _send_json(websocket, send_lock, _insight_payload(insight))
+        await _deliver_insight(
+            websocket,
+            send_lock,
+            services.memory,
+            insight,
+        )
 
 
 def _insight_payload(
@@ -1410,6 +1480,39 @@ async def _send_json(
 ) -> None:
     async with send_lock:
         await websocket.send_json(payload)
+
+
+async def _deliver_insight(
+    websocket: WebSocket,
+    send_lock: asyncio.Lock,
+    memory: MemoryEngine,
+    insight: Insight,
+    *,
+    event_id: str | None = None,
+    source: str = "final",
+) -> None:
+    await _send_json(
+        websocket,
+        send_lock,
+        _insight_payload(insight, event_id=event_id, source=source),
+    )
+    # Once send_json returns, preserve the delivery marker even if the client
+    # immediately closes the socket and cancellation reaches this worker.
+    delivery_record = asyncio.create_task(
+        memory.mark_insight_delivered(insight.id)
+    )
+    try:
+        await asyncio.shield(delivery_record)
+    except asyncio.CancelledError:
+        await delivery_record
+        raise
+    logger.info(
+        "Insight delivered session=%s insight=%s source=%s event=%s",
+        insight.session_id,
+        insight.id,
+        source,
+        event_id,
+    )
 
 
 async def _send_ack(

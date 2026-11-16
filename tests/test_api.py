@@ -254,6 +254,20 @@ def test_websocket_transcript_to_insight(tmp_path, monkeypatch) -> None:
             }
             assert insight["type"] == "insight"
             assert insight["text"] == "Bring your ID and the signed form."
+            assert ready["insight_receipts"] == ["received", "displayed"]
+
+            socket.send_json(
+                {
+                    "type": "insight_receipt",
+                    "insight_id": insight["insight_id"],
+                    "status": "displayed",
+                }
+            )
+            assert socket.receive_json() == {
+                "type": "insight_receipt_saved",
+                "insight_id": insight["insight_id"],
+                "status": "displayed",
+            }
 
     get_settings.cache_clear()
 
