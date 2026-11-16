@@ -48,7 +48,8 @@ If the intent is `entity_context`, describe only the named person's role, respon
 relationship supported by the supplied conversation. Qualify inferred roles with `appears to be`,
 `likely`, or equivalent wording in the output language; never invent an exact title or sensitive trait.
 For topic-observer intents (`technical_context`, `diagnostic_hypothesis`, `troubleshooting_step`,
-`platform_difference`, `implementation_option`, `risk_or_constraint`, `conversation_recap`), begin
+`platform_difference`, `implementation_option`, `architecture_guidance`, `tradeoff`, `mechanism`,
+`risk_or_constraint`, `conversation_recap`), begin
 with a short useful heading followed by ` — ` and then the explanation. Add a concrete implication
 or next check when supported. For `diagnostic_hypothesis`, explicitly use cautious language such as
 `may`, `could`, `possibly`, or its equivalent in the output language. Never present a hypothesis as

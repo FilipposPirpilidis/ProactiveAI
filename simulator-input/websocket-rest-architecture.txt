@@ -1,0 +1,8 @@
+# Architecture-decision regression distilled from a real conversation. The
+# useful card should qualify the speakers' REST-versus-WebSocket explanation.
+FINAL: We manually reload the table view and wait for the API response, so we are not using any handshake or WebSocket for chat right now.
+FINAL: Would you use sockets or just the normal API for this flow?
+FINAL: For end-to-end real-time data I would use WebSockets so state changes arrive immediately on both sides.
+FINAL: For a chatbot I can wait for processing and use conventional REST APIs instead.
+WAIT: 6
+EXPECT_INSIGHT: WebSocket

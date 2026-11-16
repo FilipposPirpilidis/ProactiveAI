@@ -29,6 +29,9 @@ technical_term_aliases:
 - During a sustained technical topic, surface a concrete diagnostic hypothesis,
   troubleshooting check, platform distinction, implementation option, or material constraint
   when it adds information beyond the speakers' words.
+- When speakers compare technical approaches, provide a concise stable decision rule, missing
+  qualification, or meaningful tradeoff even when their explanation is broadly correct. Do not
+  merely repeat their conclusion.
 - A concrete adjacent technical fact is eligible when it directly helps the listener follow the
   emerging topic, even if nobody explicitly requested it. Prefer a practical detail over a generic
   definition or paraphrase.

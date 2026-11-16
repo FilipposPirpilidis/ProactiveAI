@@ -1,5 +1,4 @@
 from app.topic_observer import TopicObserver
-from app.profiles import InsightProfile, ProfileTerm
 
 
 class RecordingOllama:
@@ -43,6 +42,36 @@ async def test_topic_observer_can_propose_a_diagnostic_step_from_multiple_turns(
     assert "required output language is Greek" in ollama.prompt
 
 
+async def test_topic_observer_can_qualify_an_architecture_comparison() -> None:
+    ollama = RecordingOllama(
+        '{"should_trigger":true,"confidence":0.91,'
+        '"reason":"the comparison needs an interaction-pattern decision rule",'
+        '"intent":"architecture_guidance",'
+        '"insight":"Protocol choice — Use REST for request/response, SSE for one-way token streaming, and WebSockets for continuous bidirectional updates.",'
+        '"people":[],"answer_verification":false,'
+        '"subject":"REST versus WebSocket",'
+        '"topic":"chat transport architecture",'
+        '"angle":"request-response versus streaming and bidirectional updates",'
+        '"source_text":"Would you use sockets or just the normal API",'
+        '"knowledge_scope":"stable","requires_current_information":false,'
+        '"discourse_mode":"conversation"}'
+    )
+    observer = TopicObserver(ollama)  # type: ignore[arg-type]
+
+    result = await observer.detect(
+        "We manually reload after the API response. Would you use sockets or just "
+        "the normal API? For a chatbot I can wait and use REST instead."
+    )
+
+    assert result.should_trigger is True
+    assert result.intent == "architecture_guidance"
+    assert result.subject == "REST versus WebSocket"
+    assert result.insight is not None
+    assert "SSE" in result.insight
+    assert "even if someone has already offered a broadly" in ollama.prompt
+    assert "continuous bidirectional" in ollama.prompt
+
+
 async def test_topic_observer_rejects_a_candidate_without_subject_angle_evidence() -> None:
     ollama = RecordingOllama(
         '{"should_trigger":true,"confidence":0.94,"reason":"generic",'
@@ -77,6 +106,9 @@ def test_topic_intents_use_risk_adjusted_confidence_floors() -> None:
 
     assert TopicInsightWorker.minimum_confidence("definition", 0.78) == 0.78
     assert TopicInsightWorker.minimum_confidence("implementation_option", 0.78) == 0.80
+    assert TopicInsightWorker.minimum_confidence("architecture_guidance", 0.78) == 0.80
+    assert TopicInsightWorker.minimum_confidence("tradeoff", 0.78) == 0.80
+    assert TopicInsightWorker.minimum_confidence("mechanism", 0.70) == 0.78
     assert TopicInsightWorker.minimum_confidence("diagnostic_hypothesis", 0.78) == 0.85
     assert TopicInsightWorker.minimum_confidence("fact_check", 0.78) == 0.95
     assert TopicInsightWorker.minimum_confidence("definition", 0.90) == 0.90
@@ -101,35 +133,3 @@ async def test_topic_observer_requires_finished_one_pass_card() -> None:
     assert result.should_trigger is False
     assert result.reason == "incomplete_topic_evidence"
     assert "COMPLETE user-visible card" in ollama.prompt
-
-
-async def test_topic_observer_receives_profile_and_contextual_terms() -> None:
-    ollama = RecordingOllama(
-        '{"should_trigger":false,"confidence":0.90,"reason":"already explained",'
-        '"intent":"none","insight":null,"people":[],"answer_verification":false,'
-        '"knowledge_scope":"stable","requires_current_information":false,'
-        '"discourse_mode":"conversation"}'
-    )
-    profile = InsightProfile(
-        id="ios_development",
-        display_name="iOS Development",
-        signals=["SwiftUI"],
-        preferred_insights=["definition", "mechanism"],
-        terms={
-            "ObservableObject": ProfileTerm(
-                aliases=["observable"],
-                importance="high",
-                requires_context=["SwiftUI"],
-            )
-        },
-    )
-    observer = TopicObserver(ollama)  # type: ignore[arg-type]
-
-    await observer.detect(
-        "The observable state updates our SwiftUI view.",
-        profile=profile,
-    )
-
-    assert "iOS Development (`ios_development`)" in ollama.prompt
-    assert "ObservableObject" in ollama.prompt
-    assert "definition, mechanism" in ollama.prompt

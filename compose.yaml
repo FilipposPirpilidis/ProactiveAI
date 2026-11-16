@@ -21,7 +21,6 @@ services:
       AUTH_TOKEN_TTL_SECONDS: ${AUTH_TOKEN_TTL_SECONDS:-86400}
       DETECTOR_MODE: ${DETECTOR_MODE:-conversate}
       CONVERSATE_RULES_PATH: /config/conversate-rules.md
-      INSIGHT_PROFILES_PATH: /config/insight-profiles.yaml
       PARTIAL_INSIGHT_DEBOUNCE_MS: ${PARTIAL_INSIGHT_DEBOUNCE_MS:-650}
       PARTIAL_INSIGHT_INTERVAL_MS: ${PARTIAL_INSIGHT_INTERVAL_MS:-2000}
       PARTIAL_INSIGHT_COOLDOWN_SECONDS: ${PARTIAL_INSIGHT_COOLDOWN_SECONDS:-12}
@@ -52,7 +51,6 @@ services:
     volumes:
       - homebuddy-data:/data
       - ./config/conversate-rules.md:/config/conversate-rules.md:ro
-      - ./config/insight-profiles.yaml:/config/insight-profiles.yaml:ro
     security_opt:
       - no-new-privileges:true
     cap_drop:

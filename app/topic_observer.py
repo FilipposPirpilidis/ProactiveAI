@@ -3,7 +3,6 @@ import json
 from app.languages import language_instruction
 from app.models import Detection
 from app.ollama import OllamaClient, OllamaError
-from app.profiles import InsightProfile
 from app.rules import technical_term_candidates
 
 
@@ -16,6 +15,9 @@ class TopicObserver:
         "troubleshooting_step",
         "platform_difference",
         "implementation_option",
+        "architecture_guidance",
+        "tradeoff",
+        "mechanism",
         "risk_or_constraint",
         "conversation_recap",
         "definition",
@@ -43,7 +45,6 @@ class TopicObserver:
         language: str | None = None,
         shown_insights: tuple[str, ...] = (),
         explained_angles: tuple[str, ...] = (),
-        profile: InsightProfile | None = None,
     ) -> Detection:
         alias_candidates = list(
             technical_term_candidates(
@@ -51,17 +52,6 @@ class TopicObserver:
                 self.technical_term_aliases,
             )
         )
-        if profile:
-            alias_candidates.extend(profile.term_candidates(conversation))
-        alias_candidates = list(dict.fromkeys(alias_candidates))
-        profile_id = profile.id if profile else "general"
-        profile_name = profile.display_name if profile else "General"
-        preferred_insights = (
-            ", ".join(profile.preferred_insights)
-            if profile and profile.preferred_insights
-            else "definition, technical_context, mechanism"
-        )
-        current_information = bool(profile and profile.current_information)
         prompt = f"""You are the topic observer for smart glasses following a live conversation.
 Unlike an immediate utterance detector, evaluate the ACTIVE TOPIC across the complete recent
 conversation below. Select at most ONE card: the most useful new technical fact, explanation,
@@ -72,11 +62,6 @@ Return the COMPLETE user-visible card in `insight` in the required output langua
 an outline or instructions for another model. Aim for about {self.target_characters} characters and
 never exceed {self.max_characters}. Begin topic-observer cards with a short useful heading followed
 by ` — `. For a diagnostic hypothesis, use explicitly cautious language in the card itself.
-
-Active auto-detected profile: {profile_name} (`{profile_id}`).
-Preferred insight types for this profile: {preferred_insights}.
-This profile may involve current information: {str(current_information).lower()}.
-The profile is a relevance hint, not a restriction; follow a clear topic shift in the transcript.
 
 Good cards do more than repeat the speakers. They can connect several turns and add stable general
 knowledge. One concrete adjacent technical fact is eligible when it directly helps the listener
@@ -91,6 +76,9 @@ Use one of these intents when triggered:
 - troubleshooting_step: one concrete check that can distinguish likely causes
 - platform_difference: a directly relevant difference between platforms or environments
 - implementation_option: a concrete technical approach relevant to the stated goal
+- architecture_guidance: a concise decision rule for choosing between technical approaches
+- tradeoff: the material benefit and cost of two approaches being compared
+- mechanism: a short explanation of how an important technical concept works
 - risk_or_constraint: a material limitation that changes the plan or test
 - conversation_recap: a useful clarification of an agreed action or decision, never a generic summary
 - definition: an unexplained specialist term or acronym
@@ -102,6 +90,13 @@ the final card will be written as a possibility, not a fact. For stable platform
 current facts. If the answer needs live web data, private documentation, or missing project details,
 set `requires_current_information` true and do not trigger. Ignore greetings, status-only updates,
 jokes, broken translation, incomplete fragments, and ordinary narration with no concrete addition.
+
+When speakers compare technical approaches or ask which architecture to use, trigger when a stable,
+practical decision rule would clarify the choice—even if someone has already offered a broadly
+correct answer. Add the missing qualification rather than repeating them. For example, distinguish
+ordinary HTTP request/response, one-way SSE or HTTP streaming, and continuous bidirectional
+WebSocket communication by the actual interaction pattern, not merely by whether the product is a
+chat interface. Use `architecture_guidance` or `tradeoff` for this kind of card.
 
 Technical ASR can phonetically corrupt names and acronyms, for example `NIP` when the surrounding
 iOS discussion clearly means `NIB`, or omit a letter from `MVVM`. Resolve a canonical technical term
@@ -123,14 +118,14 @@ Already displayed cards:
 Already explained subject-angle fingerprints:
 {self._lines(explained_angles)}
 
-Configured or profile-specific technical terms recognized in the recent speech:
+Configured technical terms recognized in the recent speech:
 {self._lines(alias_candidates)}
 
 Recent active-topic conversation:
 {conversation}
 
 Return JSON only using exactly this structure:
-{{"should_trigger":bool,"confidence":0..1,"reason":"short", "intent":"technical_context|diagnostic_hypothesis|troubleshooting_step|platform_difference|implementation_option|risk_or_constraint|conversation_recap|definition|fact_check|none","insight":"finished user-visible card or null","people":[],"answer_verification":false,"subject":"canonical subject or null","topic":"active topic or null","angle":"specific non-generic angle or null","source_text":"small exact supporting excerpt or null","knowledge_scope":"stable|current|personal|uncertain|fictional_context","requires_current_information":bool,"discourse_mode":"conversation|lecture|narration|fiction|unknown"}}"""
+{{"should_trigger":bool,"confidence":0..1,"reason":"short", "intent":"technical_context|diagnostic_hypothesis|troubleshooting_step|platform_difference|implementation_option|architecture_guidance|tradeoff|mechanism|risk_or_constraint|conversation_recap|definition|fact_check|none","insight":"finished user-visible card or null","people":[],"answer_verification":false,"subject":"canonical subject or null","topic":"active topic or null","angle":"specific non-generic angle or null","source_text":"small exact supporting excerpt or null","knowledge_scope":"stable|current|personal|uncertain|fictional_context","requires_current_information":bool,"discourse_mode":"conversation|lecture|narration|fiction|unknown"}}"""
         try:
             raw = await self.ollama.chat(
                 [{"role": "user", "content": prompt}],

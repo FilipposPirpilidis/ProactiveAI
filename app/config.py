@@ -33,7 +33,6 @@ class Settings(BaseSettings):
     transcript_max_items: int = 40
     detector_mode: str = Field(default="conversate", pattern="^(heuristic|hybrid|conversate)$")
     conversate_rules_path: str = "/app/config/conversate-rules.md"
-    insight_profiles_path: str = "/app/config/insight-profiles.yaml"
     detector_threshold: float = 0.72
     insight_cooldown_seconds: int = 20
     partial_insight_debounce_ms: int = Field(default=650, ge=0, le=5_000)
