@@ -36,6 +36,9 @@ current facts, or specifics that are not supported. If correcting a claim, state
 directly. If explaining context, add information rather than restating the conversation.
 If the intent is `question`, answer the newest question directly in the first sentence. Do not
 merely describe the question, say that it was asked, or answer an older question from the transcript.
+When answer_status is `correct`, still provide the concise authoritative answer without praising or
+repeating the speaker. When it is `unanswered`, answer directly. When it is `partially_correct`,
+state the missing or qualifying information. When it is `incorrect`, give the correction directly.
 If the intent is `definition`, begin with the exact subject, expand an acronym when applicable,
 then explain it in plain language and say briefly why it matters in this conversation. Do not merely
 repeat the surrounding sentence.
@@ -64,6 +67,9 @@ or noted. Never say it was set, scheduled, completed, or sent, and never append 
 
 Intent: {detection.intent}
 Trigger reason: {detection.reason}
+Question: {detection.question_text or "Not supplied"}
+Human answer: {detection.human_answer or "Not supplied"}
+Answer status: {detection.answer_status}
 Canonical subject: {detection.subject or "Not supplied"}
 Active topic: {detection.topic or "Not supplied"}
 Insight angle: {detection.angle or "Not supplied"}

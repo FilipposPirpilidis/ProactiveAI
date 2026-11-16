@@ -144,7 +144,7 @@ async def run_scenario(socket: ClientConnection, timeout: float) -> None:
     await send_json(socket, {"type": "ping"})
     await expect(socket, "pong", timeout)
 
-    partial = transcript_payload("What should I bring to", final=False)
+    partial = transcript_payload("What is the capital", final=False)
     await send_json(socket, partial)
     partial_ack = await expect(socket, "ack", timeout)
     if partial_ack.get("processed") is not False:
@@ -156,10 +156,11 @@ async def run_scenario(socket: ClientConnection, timeout: float) -> None:
     if filler_ack.get("triggered") is not False:
         raise RuntimeError("Filler speech unexpectedly triggered an insight")
 
-    question = transcript_payload("What should I bring to the appointment tomorrow?")
+    question = transcript_payload("What is the capital of Australia?")
     await send_json(socket, question)
     question_ack = await expect(socket, "ack", timeout)
-    if question_ack.get("triggered") is not True:
+    question_queued = question_ack.get("reason") == "question_observer_queued"
+    if question_ack.get("triggered") is not True and not question_queued:
         raise RuntimeError(f"Actionable question did not trigger: {question_ack.get('reason')}")
 
     result = await receive_json(socket, max(timeout, 60.0))
@@ -173,7 +174,10 @@ async def run_scenario(socket: ClientConnection, timeout: float) -> None:
         {"type": "feedback", "insight_id": result["insight_id"], "useful": True},
     )
     await expect(socket, "feedback_saved", timeout)
-    print("\nPASS: WebSocket, buffering, detector, memory, Ollama, and feedback all worked.")
+    print(
+        "\nPASS: WebSocket, buffering, question observer, detector, memory, "
+        "Ollama, and feedback all worked."
+    )
 
 
 def parse_text_file(path: Path) -> list[FileAction]:

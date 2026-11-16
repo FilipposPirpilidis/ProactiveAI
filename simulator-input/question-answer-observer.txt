@@ -1,0 +1,10 @@
+# The default `always` policy returns one answer even when a speaker answers correctly.
+FINAL: What is the capital of Australia?
+FINAL: Canberra.
+EXPECT_INSIGHT: Canberra
+
+# A materially wrong answer receives a concise correction.
+WAIT: 3
+FINAL: Which planet is known as the Red Planet?
+FINAL: Venus.
+EXPECT_INSIGHT: Mars

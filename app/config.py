@@ -49,6 +49,15 @@ class Settings(BaseSettings):
     topic_observer_min_confidence: float = Field(default=0.86, ge=0, le=1)
     topic_observer_max_age_seconds: float = Field(default=90.0, ge=5, le=600)
     topic_observer_context_items: int = Field(default=24, ge=3, le=100)
+    question_observer_enabled: bool = True
+    question_insight_policy: str = Field(
+        default="always",
+        pattern="^(always|unanswered_or_incorrect|incorrect_only)$",
+    )
+    question_answer_grace_seconds: float = Field(default=2.0, ge=0, le=15)
+    question_tracking_seconds: float = Field(default=15.0, ge=2, le=120)
+    question_verification_confidence: float = Field(default=0.90, ge=0, le=1)
+    question_observer_context_items: int = Field(default=10, ge=2, le=40)
     insight_target_characters: int = Field(default=260, ge=40, le=500)
     insight_max_characters: int = Field(default=340, ge=80, le=1_000)
     memory_result_limit: int = 5

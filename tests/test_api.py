@@ -180,6 +180,41 @@ class RepeatedAnswerCorrectionDetector(CombinedDetector):
         )
 
 
+class CorrectAnswerQuestionObserver:
+    @staticmethod
+    def is_question_candidate(text: str, language: str | None = None) -> bool:
+        return text.startswith("What is")
+
+    @staticmethod
+    def owns_latest_turn(
+        conversation: str,
+        latest_utterance: str,
+        language: str | None = None,
+    ) -> bool:
+        return "What is the capital of Australia" in conversation
+
+    @staticmethod
+    def fingerprint(text: str) -> str:
+        return " ".join(text.casefold().replace("?", "").split())
+
+    async def assess(self, *args: object, **kwargs: object) -> Detection:
+        return Detection(
+            should_trigger=True,
+            confidence=0.98,
+            reason="human answer is correct",
+            intent="question",
+            answer_verification=True,
+            answer_status="correct",
+            question_text="What is the capital of Australia?",
+            human_answer="Canberra.",
+            subject="capital of Australia",
+            topic="geography",
+            angle="direct_answer",
+            knowledge_scope="stable",
+            discourse_mode="conversation",
+        )
+
+
 def test_websocket_transcript_to_insight(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "api.db"))
     monkeypatch.setenv("DETECTOR_MODE", "heuristic")
@@ -263,6 +298,59 @@ def test_answer_correction_bypasses_repeated_insight_suppression(
             assert ack["triggered"] is True
             assert insight["intent"] == "fact_check"
             assert insight["text"] == "Correction: 54 + 54 is 108."
+
+    get_settings.cache_clear()
+
+
+def test_question_observer_emits_when_another_speaker_answered_correctly(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "question-observer.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "conversate")
+    monkeypatch.setenv("QUESTION_ANSWER_GRACE_SECONDS", "0.1")
+    configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        token = sign_in(client)
+        app.state.services.question_observer = CorrectAnswerQuestionObserver()
+        app.state.services.insights = FakeInsightEngine()
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=question-observer",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as socket:
+            ready = socket.receive_json()
+            assert ready["question_observer"] is True
+            assert ready["question_insight_policy"] == "always"
+
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "question-1",
+                    "text": "What is the capital of Australia?",
+                    "is_final": True,
+                    "speaker": "Speaker 1",
+                    "language": "en",
+                }
+            )
+            assert socket.receive_json()["reason"] == "question_observer_queued"
+
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "answer-1",
+                    "text": "Canberra.",
+                    "is_final": True,
+                    "speaker": "Speaker 2",
+                    "language": "en",
+                }
+            )
+            assert socket.receive_json()["reason"] == "question_observer_queued"
+            insight = socket.receive_json()
+            assert insight["type"] == "insight"
+            assert insight["event_id"] == "question-1"
+            assert insight["intent"] == "question"
+            assert insight["text"] == "Bring your ID and the signed form."
 
     get_settings.cache_clear()
 

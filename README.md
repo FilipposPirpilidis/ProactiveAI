@@ -9,6 +9,7 @@ It is designed for a Raspberry Pi 5 and ARM64 Docker, but also runs on Docker De
 - FastAPI WebSocket API for HomeBuddy/Soniox transcripts
 - rolling, time-bounded conversation context
 - separate Ollama Cloud trigger detection and insight generation stages
+- a question-observer lane that tracks human answers and verifies their completeness
 - a topic-observer lane for multi-turn technical context and troubleshooting suggestions
 - deterministic freshness, cooldown, and duplicate controls
 - durable transcripts, memories, insights, and feedback
@@ -45,8 +46,8 @@ HomeBuddy / glasses microphone
       TranscriptBuffer ─────► SQLite transcript history
               │
               ▼
-      ┌──── Fast utterance lane ────► questions, calculations, definitions
-      │
+      ┌──── Fast utterance lane ────► calculations, definitions, warnings
+      ├──── Question observer ──────► unanswered/correct/partial/wrong answers
       └──── Topic observer lane ────► multi-turn context, diagnostics, next checks
                          │
                          ▼
@@ -330,6 +331,15 @@ Run the built-in protocol smoke test:
 ```bash
 docker compose --profile simulator run --rm simulator \
   python scripts/simulator.py scenario
+```
+
+Run the question-observer regression (correct and incorrect human answers):
+
+```bash
+docker compose --profile simulator run --rm \
+  -e SIMULATOR_TEXT_FILE=/input/question-answer-observer.txt \
+  -e SIMULATOR_LANGUAGE=en \
+  simulator
 ```
 
 Text-file example:
@@ -826,14 +836,19 @@ offering a practical alternative. The generated card answers the newest question
 transcript remains context only. Distinct questions on the same topic are not suppressed merely
 because their answers repeat place or subject names.
 
-In `conversate` mode, finalized conversational turns are also evaluated as question/answer or
-statement/response pairs. A short reply such as `108`, `yes`, or `no` is sent to the local model when
-it follows an objective question or comes from a different labeled speaker. If the reply is correct,
-the engine normally stays silent; if it is wrong, endorses an incorrect statement, or is materially
-misleading, it emits a `fact_check` correction. These corrections bypass ordinary repeated-card
-suppression because the new human response is a new reason to show the fact. Sensitive credentials
-are never evaluated this way, and unstable partial replies wait for the finalized transcript before
-verification.
+In `conversate` mode, the question observer owns finalized objective questions and their immediate
+human answers. It waits briefly for another speaker, then classifies the pair as `unanswered`,
+`correct`, `partially_correct`, `incorrect`, or `unverifiable`. The default `always` policy emits one
+concise authoritative card for every stable, answerable question even when another speaker answered
+correctly. Partial answers receive the missing qualification, while incorrect answers receive a
+direct `fact_check` correction. Questions requiring current news, weather, prices, schedules, private
+data, or other live information remain silent rather than being guessed.
+
+The observer fingerprints each question and emits at most one card for it. Its short grace period
+also prevents a fast human reply from making the original question result stale. Subjective,
+interpersonal, rhetorical, fictional, incomplete, and incoherent questions are excluded. Explicit
+arithmetic remains in the deterministic calculator lane. Unstable partial replies wait for finalized
+transcript before verification.
 
 You can exercise this behavior with the included file scenario:
 
@@ -891,6 +906,12 @@ span remains part of the active rolling topic.
 | `TOPIC_OBSERVER_MIN_CONFIDENCE` | `0.86` | Minimum confidence for a topic card |
 | `TOPIC_OBSERVER_MAX_AGE_SECONDS` | `90` | Maximum generation age while its source remains in the active topic |
 | `TOPIC_OBSERVER_CONTEXT_ITEMS` | `24` | Maximum finalized utterances supplied to the topic observer |
+| `QUESTION_OBSERVER_ENABLED` | `true` | Enable finalized question/answer tracking in `conversate` mode |
+| `QUESTION_INSIGHT_POLICY` | `always` | `always`, `unanswered_or_incorrect`, or `incorrect_only` |
+| `QUESTION_ANSWER_GRACE_SECONDS` | `2` | Brief wait for a human answer before evaluating the question |
+| `QUESTION_TRACKING_SECONDS` | `15` | Maximum age of turns retained by the question observer |
+| `QUESTION_VERIFICATION_CONFIDENCE` | `0.90` | Minimum confidence required to display a question result |
+| `QUESTION_OBSERVER_CONTEXT_ITEMS` | `10` | Maximum finalized turns retained for question/answer matching |
 | `INSIGHT_TARGET_CHARACTERS` | `260` | Soft target for each glasses card; shorter complete answers remain valid |
 | `INSIGHT_MAX_CHARACTERS` | `340` | Hard UI safety ceiling; oversized output is cut at a sentence or word boundary |
 | `TRANSCRIPT_WINDOW_SECONDS` | `180` | Rolling context age |

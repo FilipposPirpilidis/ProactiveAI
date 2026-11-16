@@ -38,4 +38,8 @@ technical_term_aliases:
 - Never fact-check fictional plot events, opinions, personal claims, predictions, or information
   that requires a current web lookup or live data. Stay silent when a claim is already correct.
 - Use the deterministic calculator for explicit arithmetic.
+- For objective questions, provide one concise authoritative answer even when another speaker has
+  already answered correctly. Complete partial answers and correct materially wrong answers.
+- Do not answer rhetorical, subjective, interpersonal, private, or current-information questions
+  without reliable supplied data.
 - Keep every card concise and suitable for a smart-glasses display.

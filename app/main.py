@@ -1,5 +1,6 @@
 import asyncio
 import logging
+from collections import deque
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from app.auth import AuthService
 from app.buffer import PartialTranscriptAssembler, TranscriptBuffer
+from app.calculations import calculate_spoken_expression
 from app.config import Settings, get_settings
 from app.detector import ProactiveDetector
 from app.freshness import InsightFreshnessValidator
@@ -21,6 +23,7 @@ from app.models import (
     TranscriptMessage,
 )
 from app.ollama import OllamaClient, OllamaError
+from app.question_observer import QuestionObserver
 from app.session_analysis import SessionAnalyzer
 from app.topic_observer import TopicObserver
 from app.rules import ConversateRules, SessionLanguageResolver
@@ -75,6 +78,10 @@ class ServiceContainer:
             self.trigger_ollama,
             self.rules.instructions,
             self.rules.technical_term_aliases,
+        )
+        self.question_observer = QuestionObserver(
+            self.trigger_ollama,
+            self.rules.instructions,
         )
         self.insights = InsightEngine(
             self.insight_ollama,
@@ -200,6 +207,16 @@ class PartialInsightWorker:
             conversation = "\n".join(
                 part for part in (self.buffer.latest_text(5), partial_context) if part
             )
+            if (
+                self.services.settings.question_observer_enabled
+                and self.services.question_observer.owns_latest_turn(
+                    conversation,
+                    latest_segment,
+                    transcript.language,
+                )
+                and calculate_spoken_expression(latest_segment) is None
+            ):
+                return
             memories = await self.services.memory.relevant(self.client_id, conversation)
             memory_context = "\n".join(f"- {item.content}" for item in memories)
             people_context = await self.services.memory.people_context(self.session_id)
@@ -631,6 +648,211 @@ class TopicInsightWorker:
         return overlap >= 0.6
 
 
+class QuestionInsightWorker:
+    """Track final question/answer turns and emit one result per objective question."""
+
+    def __init__(
+        self,
+        websocket: WebSocket,
+        send_lock: asyncio.Lock,
+        insight_lock: asyncio.Lock,
+        services: ServiceContainer,
+        client_id: str,
+        session_id: str,
+    ) -> None:
+        self.websocket = websocket
+        self.send_lock = send_lock
+        self.insight_lock = insight_lock
+        self.services = services
+        self.client_id = client_id
+        self.session_id = session_id
+        self._turns: deque[tuple[float, TranscriptMessage]] = deque(
+            maxlen=services.settings.question_observer_context_items
+        )
+        self._handled: deque[tuple[str, str]] = deque(maxlen=100)
+        self._revision = 0
+        self._task: asyncio.Task[None] | None = None
+
+    def submit(self, transcript: TranscriptMessage) -> None:
+        now = asyncio.get_running_loop().time()
+        self._turns.append((now, transcript))
+        if (
+            self.services.question_observer.is_question_candidate(
+                transcript.text,
+                transcript.language,
+            )
+            and calculate_spoken_expression(transcript.text) is not None
+        ):
+            self._remember_handled(transcript.text)
+        self._revision += 1
+        if not self._task or self._task.done():
+            self._task = asyncio.create_task(self._run())
+
+    async def close(self) -> None:
+        if self._task and not self._task.done():
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+
+    async def _run(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(
+                    self.services.settings.question_answer_grace_seconds
+                )
+                revision = self._revision
+                await self._evaluate()
+                if revision == self._revision:
+                    return
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Question observer failed session=%s", self.session_id)
+
+    async def _evaluate(self) -> None:
+        now = asyncio.get_running_loop().time()
+        evaluation_started = now
+        tracking_seconds = self.services.settings.question_tracking_seconds
+        while self._turns and now - self._turns[0][0] > tracking_seconds:
+            self._turns.popleft()
+        if not self._turns:
+            return
+
+        snapshot = tuple(item for _, item in self._turns)
+        turns = tuple(
+            f"{item.speaker or 'unknown'}: {item.text}" for item in snapshot
+        )
+        detection = await self.services.question_observer.assess(
+            turns,
+            language=snapshot[-1].language,
+            policy=self.services.settings.question_insight_policy,
+            handled_questions=tuple(original for _, original in self._handled),
+        )
+        logger.info(
+            "Question evaluated session=%s triggered=%s status=%s intent=%s "
+            "confidence=%.2f subject=%s reason=%s",
+            self.session_id,
+            detection.should_trigger,
+            detection.answer_status,
+            detection.intent,
+            detection.confidence,
+            detection.subject,
+            detection.reason,
+        )
+        if not detection.question_text:
+            return
+
+        fingerprint = self.services.question_observer.fingerprint(
+            detection.question_text
+        )
+        if not fingerprint or any(
+            previous == fingerprint for previous, _ in self._handled
+        ):
+            return
+
+        # Unverifiable, policy-suppressed, and confidently rejected questions
+        # are complete decisions. Model outages remain retryable on the next turn.
+        if not detection.should_trigger:
+            if detection.reason != "question_observer_unavailable":
+                self._remember_handled(detection.question_text)
+            return
+        if (
+            detection.confidence
+            < self.services.settings.question_verification_confidence
+        ):
+            return
+        if detection.requires_current_information or detection.knowledge_scope != "stable":
+            self._remember_handled(detection.question_text)
+            return
+
+        conversation = "\n".join(turns)
+        memories = await self.services.memory.relevant(
+            self.client_id,
+            conversation,
+        )
+        try:
+            insight = await self.services.insights.generate(
+                self.session_id,
+                conversation,
+                detection,
+                memories,
+                detection.question_text,
+                snapshot[-1].language,
+            )
+        except OllamaError:
+            logger.debug(
+                "Question insight generation unavailable session=%s",
+                self.session_id,
+            )
+            return
+        insight.text = sanitize_insight_text(
+            insight.text,
+            snapshot[-1].language,
+            self.services.settings.insight_max_characters,
+        )
+
+        async with self.insight_lock:
+            if any(previous == fingerprint for previous, _ in self._handled):
+                return
+            current_time = asyncio.get_running_loop().time()
+            question_still_tracked = any(
+                self.services.question_observer.fingerprint(item.text) == fingerprint
+                and current_time - observed_at <= tracking_seconds
+                for observed_at, item in self._turns
+            )
+            freshness = self.services.freshness.validate(
+                insight,
+                detection,
+                elapsed_seconds=(
+                    asyncio.get_running_loop().time() - evaluation_started
+                ),
+                max_age_seconds=tracking_seconds,
+                source_is_current=question_still_tracked,
+                repeated=self.services.detector.is_repeated_insight(
+                    self.session_id,
+                    insight.text,
+                ),
+            )
+            if not freshness.accepted:
+                logger.info(
+                    "Question insight discarded session=%s reason=%s",
+                    self.session_id,
+                    freshness.reason,
+                )
+                return
+
+            event_id = next(
+                (
+                    item.event_id
+                    for item in snapshot
+                    if self.services.question_observer.fingerprint(item.text)
+                    == fingerprint
+                ),
+                snapshot[-1].event_id,
+            )
+            await self.services.memory.store_insight(insight)
+            self.services.detector.record_insight(self.session_id, insight.text)
+            self._remember_handled(detection.question_text)
+            logger.info(
+                "Question insight emitted session=%s event=%s status=%s insight=%s",
+                self.session_id,
+                event_id,
+                detection.answer_status,
+                insight.id,
+            )
+            await _send_json(
+                self.websocket,
+                self.send_lock,
+                _insight_payload(insight, event_id=event_id, source="final"),
+            )
+
+    def _remember_handled(self, question: str) -> None:
+        fingerprint = self.services.question_observer.fingerprint(question)
+        if fingerprint and not any(
+            previous == fingerprint for previous, _ in self._handled
+        ):
+            self._handled.append((fingerprint, question))
+
+
 def _bearer_token(authorization: str | None) -> str:
     scheme, _, token = (authorization or "").partition(" ")
     if scheme.casefold() != "bearer" or not token or len(token) > 200:
@@ -876,6 +1098,14 @@ async def websocket_endpoint(
             "topic_observer_debounce_ms": (
                 services.settings.topic_observer_debounce_ms
             ),
+            "question_observer": (
+                services.settings.question_observer_enabled
+                and services.settings.detector_mode == "conversate"
+            ),
+            "question_insight_policy": services.settings.question_insight_policy,
+            "question_answer_grace_seconds": (
+                services.settings.question_answer_grace_seconds
+            ),
         }
     )
     partial_worker = PartialInsightWorker(
@@ -885,6 +1115,9 @@ async def websocket_endpoint(
         websocket, send_lock, insight_lock, services, client_id, session_id
     )
     topic_worker = TopicInsightWorker(
+        websocket, send_lock, insight_lock, services, client_id, session_id
+    )
+    question_worker = QuestionInsightWorker(
         websocket, send_lock, insight_lock, services, client_id, session_id
     )
 
@@ -921,6 +1154,7 @@ async def websocket_endpoint(
                         partial_worker,
                         final_worker,
                         topic_worker,
+                        question_worker,
                         services,
                         buffer,
                         partial_assembler,
@@ -943,6 +1177,7 @@ async def websocket_endpoint(
         await partial_worker.close()
         await final_worker.close()
         await topic_worker.close()
+        await question_worker.close()
         await _schedule_session_analysis(services, session_id)
 
 
@@ -952,6 +1187,7 @@ async def _handle_transcript(
     partial_worker: PartialInsightWorker,
     final_worker: FinalTranscriptWorker,
     topic_worker: TopicInsightWorker,
+    question_worker: QuestionInsightWorker,
     services: ServiceContainer,
     buffer: TranscriptBuffer,
     partial_assembler: PartialTranscriptAssembler,
@@ -984,6 +1220,11 @@ async def _handle_transcript(
     await services.memory.store_transcript(session_id, transcript)
     await services.memory.clear_partial(session_id)
     buffer.add(transcript)
+    if (
+        services.settings.question_observer_enabled
+        and services.settings.detector_mode == "conversate"
+    ):
+        question_worker.submit(transcript)
     final_worker.submit(transcript, buffer.latest_text(6), activity_revision)
     if (
         services.settings.topic_observer_enabled
@@ -1006,6 +1247,25 @@ async def _process_final_transcript(
     conversation: str,
     source_is_current: Callable[[], bool] = lambda: True,
 ) -> None:
+    if (
+        services.settings.question_observer_enabled
+        and services.settings.detector_mode == "conversate"
+        and calculate_spoken_expression(transcript.text) is None
+        and services.question_observer.owns_latest_turn(
+            conversation,
+            transcript.text,
+            transcript.language,
+        )
+    ):
+        await _send_ack(
+            websocket,
+            send_lock,
+            transcript.event_id,
+            False,
+            "question_observer_queued",
+        )
+        return
+
     evaluation_started = asyncio.get_running_loop().time()
     memories = await services.memory.relevant(client_id, conversation)
     memory_context = "\n".join(f"- {item.content}" for item in memories)
