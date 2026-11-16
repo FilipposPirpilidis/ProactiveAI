@@ -29,9 +29,26 @@ def test_session_language_ignores_disallowed_french_detection() -> None:
     resolver = SessionLanguageResolver(rules)
 
     assert resolver.resolve("fr", is_final=False) == "el"
+    assert resolver.resolve("en-US", is_final=False) == "en"
+    # A provisional language does not lock the session.
+    assert resolver.current == "el"
     assert resolver.resolve("fr", is_final=True) == "el"
     assert resolver.resolve("en-US", is_final=True) == "en"
     assert resolver.resolve("fr", is_final=True) == "en"
+
+
+def test_allowed_partial_language_is_provisional_until_first_final() -> None:
+    rules = ConversateRules(
+        language_policy="session_locked",
+        fallback_language="el",
+        allowed_languages=["el", "en"],
+    )
+    resolver = SessionLanguageResolver(rules)
+
+    assert resolver.resolve("en", is_final=False) == "en"
+    assert resolver.resolve("el", is_final=False) == "el"
+    assert resolver.resolve("en", is_final=True) == "en"
+    assert resolver.resolve("el", is_final=False) == "en"
 
 
 def test_fixed_policy_always_uses_fallback_language() -> None:

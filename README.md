@@ -749,8 +749,9 @@ Language policies:
 | `client` | Use the optional WebSocket `output_language` query value, otherwise the fallback. |
 
 Only entries in `allowed_languages` are accepted. With `[el, en]`, a mistaken ASR language such as
-`fr` cannot switch the response to French. Before the first reliable final transcript, output uses
-`fallback_language`. A client can explicitly request an allowed language by opening, for example,
+`fr` cannot switch the response to French. Before the first reliable final transcript, an allowed
+partial language is used provisionally without locking the session; a missing or disallowed partial
+uses `fallback_language`. A client can explicitly request an allowed language by opening, for example,
 `/v1/ws?...&output_language=en`. Start a new `session_id` when beginning a conversation in another
 language under `session_locked`.
 

@@ -82,7 +82,10 @@ class SessionLanguageResolver:
         if is_final and candidate:
             self._locked_language = candidate
             return candidate
-        return self.rules.fallback_language
+        # Before the first final result, use an allowed Soniox language only
+        # for this provisional utterance. It improves partial-card language
+        # without allowing an unstable partial to lock the whole session.
+        return candidate or self.rules.fallback_language
 
     def observe_final(self, language: str | None) -> None:
         self.resolve(language, is_final=True)
