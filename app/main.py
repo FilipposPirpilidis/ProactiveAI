@@ -572,6 +572,17 @@ class TopicInsightWorker:
             detection.intent,
             self.services.settings.topic_observer_min_confidence,
         )
+        if detection.should_trigger and detection.confidence < minimum_confidence:
+            logger.info(
+                "Topic insight discarded session=%s event=%s "
+                "reason=below_confidence_threshold intent=%s "
+                "confidence=%.2f threshold=%.2f",
+                self.session_id,
+                transcript.event_id,
+                detection.intent,
+                detection.confidence,
+                minimum_confidence,
+            )
         if (
             not detection.should_trigger
             or detection.confidence
@@ -677,10 +688,10 @@ class TopicInsightWorker:
         protected_thresholds = {
             "definition": 0.78,
             "technical_context": 0.78,
-            "implementation_option": 0.80,
-            "architecture_guidance": 0.80,
-            "tradeoff": 0.80,
-            "mechanism": 0.78,
+            "implementation_option": 0.75,
+            "architecture_guidance": 0.72,
+            "tradeoff": 0.75,
+            "mechanism": 0.72,
             "platform_difference": 0.80,
             "troubleshooting_step": 0.80,
             "risk_or_constraint": 0.85,

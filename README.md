@@ -997,7 +997,7 @@ span remains part of the active rolling topic.
 | `TOPIC_OBSERVER_DEBOUNCE_MS` | `1500` | Wait briefly for a stable multi-turn span before topic evaluation |
 | `TOPIC_OBSERVER_INTERVAL_MS` | `3500` | Minimum start-to-start interval between topic evaluations |
 | `TOPIC_OBSERVER_MIN_WORDS` | `18` | Minimum active-topic context before evaluation |
-| `TOPIC_OBSERVER_MIN_CONFIDENCE` | `0.78` | Base threshold for safe definitions/context; implementation, diagnosis, risk, recap, and fact checks retain progressively higher code-enforced floors up to `0.95` |
+| `TOPIC_OBSERVER_MIN_CONFIDENCE` | `0.72` | Base threshold for stable topic insights; implementation/tradeoff require `0.75`, diagnosis/risk `0.85`, and fact checks `0.95` |
 | `TOPIC_OBSERVER_MAX_AGE_SECONDS` | `90` | Maximum generation age while its source remains in the active topic |
 | `TOPIC_OBSERVER_CONTEXT_ITEMS` | `24` | Maximum finalized utterances supplied to the topic observer |
 | `QUESTION_OBSERVER_ENABLED` | `true` | Enable finalized question/answer tracking in `conversate` mode |

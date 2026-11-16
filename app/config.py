@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     topic_observer_debounce_ms: int = Field(default=1_500, ge=0, le=30_000)
     topic_observer_interval_ms: int = Field(default=3_500, ge=500, le=120_000)
     topic_observer_min_words: int = Field(default=18, ge=5, le=1_000)
-    topic_observer_min_confidence: float = Field(default=0.78, ge=0, le=1)
+    topic_observer_min_confidence: float = Field(default=0.72, ge=0, le=1)
     topic_observer_max_age_seconds: float = Field(default=90.0, ge=5, le=600)
     topic_observer_context_items: int = Field(default=24, ge=3, le=100)
     question_observer_enabled: bool = True
