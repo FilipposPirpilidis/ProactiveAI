@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     insight_ollama_timeout_seconds: float = 30.0
 
     database_path: str = "/data/homebuddy.db"
-    transcript_window_seconds: int = 90
+    transcript_window_seconds: int = 180
     transcript_max_items: int = 40
     detector_mode: str = Field(default="conversate", pattern="^(heuristic|hybrid|conversate)$")
     conversate_rules_path: str = "/app/config/conversate-rules.md"
@@ -42,8 +42,15 @@ class Settings(BaseSettings):
     partial_insight_min_confidence: float = Field(default=0.85, ge=0, le=1)
     partial_insight_max_age_seconds: float = Field(default=8.0, ge=0.5, le=120)
     final_insight_max_age_seconds: float = Field(default=30.0, ge=1, le=300)
-    insight_target_characters: int = Field(default=150, ge=40, le=500)
-    insight_max_characters: int = Field(default=220, ge=80, le=1_000)
+    topic_observer_enabled: bool = True
+    topic_observer_debounce_ms: int = Field(default=4_000, ge=0, le=30_000)
+    topic_observer_interval_ms: int = Field(default=8_000, ge=500, le=120_000)
+    topic_observer_min_words: int = Field(default=35, ge=5, le=1_000)
+    topic_observer_min_confidence: float = Field(default=0.86, ge=0, le=1)
+    topic_observer_max_age_seconds: float = Field(default=90.0, ge=5, le=600)
+    topic_observer_context_items: int = Field(default=24, ge=3, le=100)
+    insight_target_characters: int = Field(default=260, ge=40, le=500)
+    insight_max_characters: int = Field(default=340, ge=80, le=1_000)
     memory_result_limit: int = 5
     session_analysis_max_characters: int = Field(
         default=60_000, ge=5_000, le=1_000_000

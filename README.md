@@ -9,6 +9,7 @@ It is designed for a Raspberry Pi 5 and ARM64 Docker, but also runs on Docker De
 - FastAPI WebSocket API for HomeBuddy/Soniox transcripts
 - rolling, time-bounded conversation context
 - separate Ollama Cloud trigger detection and insight generation stages
+- a topic-observer lane for multi-turn technical context and troubleshooting suggestions
 - deterministic freshness, cooldown, and duplicate controls
 - durable transcripts, memories, insights, and feedback
 - text-file conversation simulator
@@ -44,11 +45,12 @@ HomeBuddy / glasses microphone
       TranscriptBuffer ─────► SQLite transcript history
               │
               ▼
-      Deterministic gate
-         │           │
-         │ no value  └────────► acknowledge and wait
-         ▼
- Model 1: Trigger detector (Ollama Cloud)
+      ┌──── Fast utterance lane ────► questions, calculations, definitions
+      │
+      └──── Topic observer lane ────► multi-turn context, diagnostics, next checks
+                         │
+                         ▼
+              Model 1: Trigger/ranking detector
          │ accepted
          ▼
        MemoryEngine ──────────► client + global memories
@@ -497,8 +499,18 @@ Partial cards use their own `PARTIAL_INSIGHT_COOLDOWN_SECONDS` (default `12` sec
 
 A final transcript cancels stale work from the same utterance. Partial and final
 evaluation have independent, single-flight lanes, so a slow final does not block the
-next partial. This bounds concurrency to at most one partial and one final model call per
-WebSocket while the receive loop continues acknowledging audio-derived transcripts.
+next partial. The topic observer is a third coalesced single-flight lane. This bounds each
+kind of work to one in-flight evaluation per WebSocket while the receive loop continues
+acknowledging audio-derived transcripts.
+
+Finalized speech also feeds an independent topic observer. It waits briefly for several
+turns to accumulate, then considers the active topic rather than only the newest sentence.
+This lane can produce technical context, a qualified diagnostic hypothesis, a concrete
+troubleshooting check, a platform distinction, an implementation option, a material
+constraint, or a decision/action clarification. For client compatibility, topic cards retain
+the existing `source: "final"` value and may arrive after another transcript event, as long as
+their supporting evidence remains in the active rolling context. Server logs identify them as
+topic-observer evaluations and emissions.
 
 Soniox may reuse one `event_id`, issue a new ID for every revision, or cap a cumulative
 partial to a sliding text tail. The server reconstructs overlapping revisions as one
@@ -763,7 +775,15 @@ docker compose up -d --force-recreate proactive-ai
 
 The detector can surface questions, exact calculations, context, corrections, definitions, suggestions, warnings, reminders, tasks, and decisions. Explicit arithmetic is evaluated locally with a restricted calculator rather than entrusted to the language model. In `conversate` mode the model also looks for knowledge gaps: newly introduced acronyms, specialist phrases, technical methods, protocols, standards, scientific concepts, mechanisms, and difficult references that would benefit from a short plain-language explanation. This remains active during lectures, narration, and stories, so a concept such as “water pressure zone” can be explained even though nobody asked a direct question. It avoids explaining terms that are already familiar in context, were recently explained, or are currently being defined by a speaker.
 
-Trigger decisions carry structured evidence: a canonical `subject`, the smallest relevant `source_text`, a `knowledge_scope`, whether current information is required, and the surrounding discourse mode. Definitions need confidence of at least `0.84`; context cards need `0.90`; factual corrections need `0.95`. A subject successfully explained in the current process is suppressed on later mentions in the same session. Factual corrections are limited to material errors verifiable from stable general knowledge; current facts, personal claims, predictions, opinions, and fictional plot events stay silent unless a future trusted live-data source is added.
+Trigger decisions carry structured evidence: a canonical `topic`, `subject`, narrowly
+distinguishing `angle`, the smallest relevant `source_text`, a `knowledge_scope`, whether
+current information is required, and the surrounding discourse mode. Definitions need
+confidence of at least `0.84`; context cards need `0.90`; factual corrections need `0.95`.
+Deduplication uses subject plus angle, so `Android background + WorkManager timing` does not
+block a later card about `Android background + Doze conditions`. Factual corrections are
+limited to material errors verifiable from stable general knowledge; current facts, personal
+claims, predictions, opinions, and fictional plot events stay silent unless a future trusted
+live-data source is added.
 
 `conversate` can also emit `entity_context` when recent conversation provides enough evidence to
 clarify a named person's role or relationship. Inferred roles are explicitly qualified—for example,
@@ -787,9 +807,9 @@ database (`session_people`) and survives reconnects or container restarts when t
 volume is retained. This feature does not identify someone from a name alone and does not build
 personality or sensitive-trait profiles.
 
-Insight cards aim for roughly 150 characters rather than a strict word count. A naturally complete
+Insight cards aim for roughly 260 characters rather than a strict word count. A naturally complete
 short answer is allowed to be shorter, and clarity may use somewhat more space. Output is safely
-limited to 220 characters at a sentence or word boundary so unexpected model verbosity cannot
+limited to 340 characters at a sentence or word boundary so unexpected model verbosity cannot
 overflow the glasses UI. Both values are configurable.
 
 Cards follow the transcript's `language` value while preserving necessary proper names, acronyms,
@@ -823,7 +843,18 @@ docker compose run --rm \
   simulator
 ```
 
-Questions and high-priority signals may bypass cooldown. Only the latest utterance can trigger; older speech is supporting context.
+The multi-turn topic-observer regression distilled from an official Conversate export is:
+
+```bash
+docker compose --profile simulator run --rm \
+  -e SIMULATOR_TEXT_FILE=/input/official-conversate-standup.txt \
+  -e SIMULATOR_LANGUAGE=el \
+  simulator
+```
+
+Questions and high-priority fast-lane signals may bypass cooldown. The fast lane only allows
+the latest utterance to trigger. The topic observer can use an earlier supporting span while that
+span remains part of the active rolling topic.
 
 ## Configuration
 
@@ -853,9 +884,16 @@ Questions and high-priority signals may bypass cooldown. Only the latest utteran
 | `PARTIAL_INSIGHT_MIN_CONFIDENCE` | `0.85` | Minimum confidence required to display a provisional card |
 | `PARTIAL_INSIGHT_MAX_AGE_SECONDS` | `8` | Discard a provisional card when generation finishes too late |
 | `FINAL_INSIGHT_MAX_AGE_SECONDS` | `30` | Discard a final card when generation finishes too late |
-| `INSIGHT_TARGET_CHARACTERS` | `150` | Soft target for each glasses card; shorter complete answers remain valid |
-| `INSIGHT_MAX_CHARACTERS` | `220` | Hard UI safety ceiling; oversized output is cut at a sentence or word boundary |
-| `TRANSCRIPT_WINDOW_SECONDS` | `90` | Rolling context age |
+| `TOPIC_OBSERVER_ENABLED` | `true` | Enable the finalized multi-turn topic-observer lane |
+| `TOPIC_OBSERVER_DEBOUNCE_MS` | `4000` | Wait for a short stable multi-turn span before topic evaluation |
+| `TOPIC_OBSERVER_INTERVAL_MS` | `8000` | Minimum start-to-start interval between topic evaluations |
+| `TOPIC_OBSERVER_MIN_WORDS` | `35` | Minimum active-topic context before evaluation |
+| `TOPIC_OBSERVER_MIN_CONFIDENCE` | `0.86` | Minimum confidence for a topic card |
+| `TOPIC_OBSERVER_MAX_AGE_SECONDS` | `90` | Maximum generation age while its source remains in the active topic |
+| `TOPIC_OBSERVER_CONTEXT_ITEMS` | `24` | Maximum finalized utterances supplied to the topic observer |
+| `INSIGHT_TARGET_CHARACTERS` | `260` | Soft target for each glasses card; shorter complete answers remain valid |
+| `INSIGHT_MAX_CHARACTERS` | `340` | Hard UI safety ceiling; oversized output is cut at a sentence or word boundary |
+| `TRANSCRIPT_WINDOW_SECONDS` | `180` | Rolling context age |
 | `TRANSCRIPT_MAX_ITEMS` | `40` | Rolling context item limit |
 | `MEMORY_RESULT_LIMIT` | `5` | Maximum retrieved memories |
 | `SESSION_ANALYSIS_MAX_CHARACTERS` | `60000` | Maximum transcript characters sent to one session analysis; newest records are retained and `truncated` reports reduced coverage |

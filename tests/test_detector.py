@@ -248,6 +248,34 @@ async def test_conversate_explains_a_short_technical_acronym_without_a_question(
     assert "required output language is English" in ollama.last_prompt
 
 
+async def test_conversate_recognizes_a_greek_asr_alias_for_navtex() -> None:
+    ollama = StructuredDetectionOllama(
+        '{"should_trigger":true,"confidence":0.94,"reason":"recognized technical alias",'
+        '"intent":"definition","insight":null,"people":[],"answer_verification":false,'
+        '"subject":"NAVTEX","topic":"maritime safety","angle":"definition",'
+        '"source_text":"νάφτεξ","knowledge_scope":"stable",'
+        '"requires_current_information":false,"discourse_mode":"conversation"}'
+    )
+    detector = ProactiveDetector(
+        ollama,
+        mode="conversate",
+        cooldown_seconds=0,
+        technical_term_aliases={"NAVTEX": ["NAFTEX", "νάφτεξ", "ναύτεξ"]},
+    )  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-navtex",
+        "Speaker 1: νάφτεξ",
+        "Speaker 1: νάφτεξ",
+        language="el",
+    )
+
+    assert result.should_trigger is True
+    assert result.subject == "NAVTEX"
+    assert "Configured technical-term candidates" in ollama.last_prompt
+    assert "- NAVTEX" in ollama.last_prompt
+
+
 async def test_conversate_explains_a_specialist_phrase_inside_narration() -> None:
     ollama = StructuredDetectionOllama(
         '{"should_trigger":true,"confidence":0.92,"reason":"unexplained technical concept",'
@@ -305,6 +333,21 @@ async def test_canonical_subject_is_not_explained_twice_in_one_session() -> None
 
     assert result.should_trigger is False
     assert result.reason == "subject_already_explained"
+
+
+def test_same_subject_can_have_distinct_useful_angles() -> None:
+    detector = ProactiveDetector(UnusedOllama(), mode="conversate")  # type: ignore[arg-type]
+
+    detector.record_explained_subject(
+        "session-angles", "Android background", "WorkManager timing"
+    )
+
+    assert detector.subject_angle_was_explained(
+        "session-angles", "android background", "workmanager timing"
+    )
+    assert not detector.subject_angle_was_explained(
+        "session-angles", "Android background", "Doze conditions"
+    )
 
 
 async def test_conversate_can_infer_a_named_person_role_from_conversation_clues() -> None:

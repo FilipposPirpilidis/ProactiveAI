@@ -1,4 +1,6 @@
 import logging
+import re
+import unicodedata
 from pathlib import Path
 from typing import Literal
 
@@ -15,6 +17,7 @@ class ConversateRules(BaseModel):
     )
     fallback_language: str = "el"
     allowed_languages: list[str] = Field(default_factory=lambda: ["el", "en"])
+    technical_term_aliases: dict[str, list[str]] = Field(default_factory=dict)
     instructions: str = Field(default="", max_length=12_000)
 
     @field_validator("fallback_language")
@@ -28,6 +31,27 @@ class ConversateRules(BaseModel):
         normalized = list(dict.fromkeys(_language_code(value) for value in values))
         if not normalized:
             raise ValueError("allowed_languages cannot be empty")
+        return normalized
+
+    @field_validator("technical_term_aliases")
+    @classmethod
+    def normalize_technical_aliases(
+        cls,
+        values: dict[str, list[str]],
+    ) -> dict[str, list[str]]:
+        normalized: dict[str, list[str]] = {}
+        for canonical, aliases in values.items():
+            clean_canonical = " ".join(canonical.split())
+            if not clean_canonical or len(clean_canonical) > 100:
+                raise ValueError("technical term canonical names must be 1-100 characters")
+            clean_aliases = list(
+                dict.fromkeys(
+                    clean
+                    for alias in aliases
+                    if (clean := " ".join(alias.split()))
+                )
+            )
+            normalized[clean_canonical] = clean_aliases
         return normalized
 
     @classmethod
@@ -115,3 +139,30 @@ def _language_code(value: str) -> str:
     if not code or len(code) > 12 or not code.replace("_", "").isalnum():
         raise ValueError(f"Invalid language code: {value!r}")
     return code
+
+
+def technical_term_candidates(
+    text: str,
+    aliases: dict[str, list[str]],
+) -> tuple[str, ...]:
+    """Resolve configured multilingual/ASR spellings to canonical terms."""
+    normalized_text = _normalize_alias(text)
+    found: list[str] = []
+    for canonical, variants in aliases.items():
+        for variant in (canonical, *variants):
+            normalized_variant = _normalize_alias(variant)
+            if normalized_variant and re.search(
+                rf"(?<!\w){re.escape(normalized_variant)}(?!\w)",
+                normalized_text,
+            ):
+                found.append(canonical)
+                break
+    return tuple(dict.fromkeys(found))
+
+
+def _normalize_alias(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", value).casefold()
+    without_marks = "".join(
+        character for character in decomposed if not unicodedata.combining(character)
+    )
+    return " ".join(without_marks.split())

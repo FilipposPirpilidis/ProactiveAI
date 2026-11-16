@@ -2,7 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from app.rules import ConversateRules, SessionLanguageResolver
+from app.rules import (
+    ConversateRules,
+    SessionLanguageResolver,
+    technical_term_candidates,
+)
 
 
 def test_rules_file_loads_language_policy_and_instructions(tmp_path: Path) -> None:
@@ -72,3 +76,13 @@ def test_fallback_must_be_allowed(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="fallback_language"):
         ConversateRules.load(str(path))
+
+
+def test_multilingual_technical_aliases_are_accent_insensitive() -> None:
+    aliases = {"NAVTEX": ["NAFTEX", "νάφτεξ", "ναύτεξ"]}
+
+    assert technical_term_candidates("Άκουσα ένα Ναφτεξ.", aliases) == ("NAVTEX",)
+    assert technical_term_candidates("The NAFTEX warning arrived.", aliases) == (
+        "NAVTEX",
+    )
+    assert technical_term_candidates("Μιλάμε για ναυπήγηση.", aliases) == ()

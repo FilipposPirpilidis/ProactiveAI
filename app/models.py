@@ -61,6 +61,8 @@ class Detection(BaseModel):
     people: list[PersonObservation] = Field(default_factory=list, max_length=5)
     answer_verification: bool = False
     subject: str | None = Field(default=None, max_length=200)
+    topic: str | None = Field(default=None, max_length=200)
+    angle: str | None = Field(default=None, max_length=200)
     source_text: str | None = Field(default=None, max_length=1_000)
     knowledge_scope: Literal[
         "stable", "current", "personal", "uncertain", "fictional_context"
@@ -70,7 +72,7 @@ class Detection(BaseModel):
         "conversation", "lecture", "narration", "fiction", "unknown"
     ] = "unknown"
 
-    @field_validator("subject", "source_text")
+    @field_validator("subject", "topic", "angle", "source_text")
     @classmethod
     def clean_optional_detection_text(cls, value: str | None) -> str | None:
         if value is None:

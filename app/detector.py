@@ -8,6 +8,7 @@ from app.calculations import calculate_spoken_expression
 from app.languages import language_instruction
 from app.models import Detection
 from app.ollama import OllamaClient, OllamaError
+from app.rules import technical_term_candidates
 
 
 class ProactiveDetector:
@@ -49,6 +50,7 @@ class ProactiveDetector:
         insight_target_characters: int = 150,
         insight_max_characters: int = 220,
         rules_instructions: str = "",
+        technical_term_aliases: dict[str, list[str]] | None = None,
     ) -> None:
         self.ollama = ollama
         self.mode = mode
@@ -57,6 +59,7 @@ class ProactiveDetector:
         self.insight_target_characters = insight_target_characters
         self.insight_max_characters = insight_max_characters
         self.rules_instructions = rules_instructions.strip()
+        self.technical_term_aliases = technical_term_aliases or {}
         self._last_trigger: dict[str, tuple[datetime, str]] = {}
         self._recent_insights: dict[str, deque[str]] = {}
         self._explained_subjects: dict[str, deque[str]] = {}
@@ -64,12 +67,29 @@ class ProactiveDetector:
     def record_insight(self, session_id: str, text: str) -> None:
         self._recent_insights.setdefault(session_id, deque(maxlen=5)).append(text)
 
-    def record_explained_subject(self, session_id: str, subject: str | None) -> None:
-        normalized = self._normalize_subject(subject)
+    def record_explained_subject(
+        self,
+        session_id: str,
+        subject: str | None,
+        angle: str | None = None,
+    ) -> None:
+        normalized = self._subject_angle_fingerprint(subject, angle)
         if normalized:
-            subjects = self._explained_subjects.setdefault(session_id, deque(maxlen=20))
+            subjects = self._explained_subjects.setdefault(session_id, deque(maxlen=100))
             if normalized not in subjects:
                 subjects.append(normalized)
+
+    def subject_angle_was_explained(
+        self,
+        session_id: str,
+        subject: str | None,
+        angle: str | None = None,
+    ) -> bool:
+        normalized = self._subject_angle_fingerprint(subject, angle)
+        return bool(normalized and normalized in self._explained_subjects.get(session_id, ()))
+
+    def explained_subject_angles(self, session_id: str) -> tuple[str, ...]:
+        return tuple(self._explained_subjects.get(session_id, ()))
 
     def record_trigger(self, session_id: str, text: str) -> None:
         normalized = " ".join(text.lower().split())
@@ -106,6 +126,10 @@ class ProactiveDetector:
             r"(?:^|\n)\s*speaker\s+\d+\s*:\s*", " ", latest_utterance, flags=re.IGNORECASE
         )
         normalized = " ".join(utterance_without_labels.lower().split())
+        alias_candidates = technical_term_candidates(
+            utterance_without_labels,
+            self.technical_term_aliases,
+        )
         spoken_question = self._looks_like_spoken_question(normalized, language)
         answer_verification = verify_followup_answers and self._follows_verifiable_turn(
             conversation, latest_utterance, language
@@ -113,7 +137,7 @@ class ProactiveDetector:
         if any(re.search(pattern, normalized) for pattern in self._sensitive_patterns):
             return Detection(should_trigger=False, confidence=0.98, reason="noise_or_sensitive")
         if (
-            (len(normalized) < 12 and not spoken_question)
+            (len(normalized) < 12 and not spoken_question and not alias_candidates)
             or any(re.search(pattern, normalized) for pattern in self._ignore_patterns)
         ) and not answer_verification:
             return Detection(should_trigger=False, confidence=0.98, reason="noise_or_sensitive")
@@ -172,6 +196,7 @@ class ProactiveDetector:
             or is_question
             or answer_verification
             or self._has_technical_reference(utterance_without_labels)
+            or alias_candidates
         ):
             result = await self._classify_with_llm(
                 session_id, conversation, latest_utterance, memory_context, language
@@ -186,8 +211,8 @@ class ProactiveDetector:
         minimum_confidence = self._minimum_confidence(result.intent)
         if result.should_trigger and result.confidence >= minimum_confidence:
             result.answer_verification = answer_verification
-            if result.intent == "definition" and self._subject_was_explained(
-                session_id, result.subject
+            if result.intent == "definition" and self.subject_angle_was_explained(
+                session_id, result.subject, result.angle or "definition"
             ):
                 result.should_trigger = False
                 result.reason = "subject_already_explained"
@@ -228,6 +253,10 @@ class ProactiveDetector:
         shown_insights = "\n".join(f"- {text}" for text in prior_insights or ()) or "None"
         explained_subjects = self._explained_subjects.get(session_id)
         shown_subjects = "\n".join(f"- {text}" for text in explained_subjects or ()) or "None"
+        alias_candidates = technical_term_candidates(
+            latest_utterance,
+            self.technical_term_aliases,
+        )
         prompt = (
             "You are the attention gate for smart glasses that quietly follows a live conversation. "
             "The LATEST UTTERANCE is the only event allowed to trigger a card. Older conversation is "
@@ -326,7 +355,9 @@ class ProactiveDetector:
             '"insight":"display text or null","people":['
             '{"name":"spoken name","summary":"supported person context",'
             '"confidence":0..1,"evidence":"conversation evidence"}],'
-            '"answer_verification":bool,"subject":"canonical topic or null",'
+            '"answer_verification":bool,"subject":"canonical subject or null",'
+            '"topic":"active conversation topic or null",'
+            '"angle":"specific insight angle or null",'
             '"source_text":"small exact relevant phrase or null",'
             '"knowledge_scope":"stable|current|personal|uncertain|fictional_context",'
             '"requires_current_information":bool,'
@@ -337,6 +368,8 @@ class ProactiveDetector:
             + shown_insights
             + "\n\nAlready explained canonical subjects (do not explain again):\n"
             + shown_subjects
+            + "\n\nConfigured technical-term candidates recognized in the latest speech:\n"
+            + ("\n".join(f"- {term}" for term in alias_candidates) or "None")
             + "\n\nLATEST UTTERANCE (the only trigger):\n"
             + latest_utterance
             + "\n\nOlder/recent conversation (supporting context only):\n"
@@ -388,10 +421,19 @@ class ProactiveDetector:
         return " ".join(re.findall(r"[\w]+", normalized, flags=re.UNICODE))
 
     def _subject_was_explained(self, session_id: str, subject: str | None) -> bool:
-        normalized = self._normalize_subject(subject)
-        if not normalized:
-            return False
-        return normalized in self._explained_subjects.get(session_id, ())
+        return self.subject_angle_was_explained(session_id, subject, "definition")
+
+    @classmethod
+    def _subject_angle_fingerprint(
+        cls,
+        subject: str | None,
+        angle: str | None,
+    ) -> str:
+        normalized_subject = cls._normalize_subject(subject)
+        if not normalized_subject:
+            return ""
+        normalized_angle = cls._normalize_subject(angle or "definition")
+        return f"{normalized_subject}::{normalized_angle}"
 
     @staticmethod
     def _similar(left: str, right: str) -> float:

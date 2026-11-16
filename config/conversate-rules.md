@@ -4,6 +4,15 @@ fallback_language: el
 allowed_languages:
   - el
   - en
+technical_term_aliases:
+  NAVTEX:
+    - NAFTEX
+    - νάφτεξ
+    - ναφτεξ
+    - νάβτεξ
+    - ναβτεξ
+    - ναύτεξ
+    - ναυτεξ
 ---
 
 # Conversate insight rules
@@ -17,7 +26,12 @@ allowed_languages:
   scientific concept, or technical mechanism when a non-expert needs it to follow along.
 - Technical explanations remain eligible during lectures, narration, and stories; do not
   suppress them merely because the speaker is narrating.
-- Treat the same canonical subject as already explained for the remainder of the session.
+- During a sustained technical topic, surface a concrete diagnostic hypothesis,
+  troubleshooting check, platform distinction, implementation option, or material constraint
+  when it adds information beyond the speakers' words.
+- Clearly qualify diagnostic hypotheses as possible causes, never confirmed causes.
+- Deduplicate the same canonical subject and angle; different useful angles on one subject may
+  appear separately.
 - Do not react to incomplete, incoherent, or obviously mistranscribed speech.
 - Correct a speaker only when the factual error is material and verifiable from stable general
   knowledge with very high confidence.

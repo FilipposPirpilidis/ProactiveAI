@@ -44,6 +44,12 @@ fact directly without scolding the speaker or expanding into unrelated advice.
 If the intent is `entity_context`, describe only the named person's role, responsibility, or
 relationship supported by the supplied conversation. Qualify inferred roles with `appears to be`,
 `likely`, or equivalent wording in the output language; never invent an exact title or sensitive trait.
+For topic-observer intents (`technical_context`, `diagnostic_hypothesis`, `troubleshooting_step`,
+`platform_difference`, `implementation_option`, `risk_or_constraint`, `conversation_recap`), begin
+with a short useful heading followed by ` — ` and then the explanation. Add a concrete implication
+or next check when supported. For `diagnostic_hypothesis`, explicitly use cautious language such as
+`may`, `could`, `possibly`, or its equivalent in the output language. Never present a hypothesis as
+the confirmed cause.
 Do not speak as though a human-to-human subjective question was addressed to you. Do not present
 variable travel, weather, or health estimates as certain facts without reliable supplied data.
 Be factual, calm, and concise. Aim for about {self.target_characters} characters. This is a soft
@@ -59,6 +65,8 @@ or noted. Never say it was set, scheduled, completed, or sent, and never append 
 Intent: {detection.intent}
 Trigger reason: {detection.reason}
 Canonical subject: {detection.subject or "Not supplied"}
+Active topic: {detection.topic or "Not supplied"}
+Insight angle: {detection.angle or "Not supplied"}
 Relevant source text: {detection.source_text or "Not supplied"}
 Knowledge scope: {detection.knowledge_scope}
 Discourse mode: {detection.discourse_mode}

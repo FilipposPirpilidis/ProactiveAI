@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.ollama import OllamaClient, OllamaError
 from app.session_analysis import SessionAnalyzer
+from app.topic_observer import TopicObserver
 from app.rules import ConversateRules, SessionLanguageResolver
 
 logger = logging.getLogger(__name__)
@@ -68,6 +69,12 @@ class ServiceContainer:
             settings.insight_target_characters,
             settings.insight_max_characters,
             self.rules.instructions,
+            self.rules.technical_term_aliases,
+        )
+        self.topic_observer = TopicObserver(
+            self.trigger_ollama,
+            self.rules.instructions,
+            self.rules.technical_term_aliases,
         )
         self.insights = InsightEngine(
             self.insight_ollama,
@@ -309,7 +316,11 @@ class PartialInsightWorker:
                     self.services.detector, "record_explained_subject", None
                 )
                 if record_subject and detection.intent == "definition":
-                    record_subject(self.session_id, detection.subject)
+                    record_subject(
+                        self.session_id,
+                        detection.subject,
+                        detection.angle or "definition",
+                    )
                 self._last_insight_snapshot = transcript.text
                 logger.info(
                     "Partial insight emitted session=%s event=%s insight=%s",
@@ -410,6 +421,214 @@ class FinalTranscriptWorker:
                     self._queue.task_done()
         except asyncio.CancelledError:
             raise
+
+
+class TopicInsightWorker:
+    """Observe a rolling multi-turn topic independently of the fast lane."""
+
+    def __init__(
+        self,
+        websocket: WebSocket,
+        send_lock: asyncio.Lock,
+        insight_lock: asyncio.Lock,
+        services: ServiceContainer,
+        client_id: str,
+        session_id: str,
+    ) -> None:
+        self.websocket = websocket
+        self.send_lock = send_lock
+        self.insight_lock = insight_lock
+        self.services = services
+        self.client_id = client_id
+        self.session_id = session_id
+        self._revision = 0
+        self._latest: tuple[int, TranscriptMessage, str] | None = None
+        self._task: asyncio.Task[None] | None = None
+
+    def submit(self, transcript: TranscriptMessage, conversation: str) -> None:
+        self._revision += 1
+        self._latest = (self._revision, transcript, conversation)
+        if not self._task or self._task.done():
+            self._task = asyncio.create_task(self._run())
+
+    async def close(self) -> None:
+        self._latest = None
+        if self._task and not self._task.done():
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+
+    async def _run(self) -> None:
+        try:
+            while self._latest:
+                await asyncio.sleep(
+                    self.services.settings.topic_observer_debounce_ms / 1_000
+                )
+                latest = self._latest
+                if not latest:
+                    return
+                revision, transcript, conversation = latest
+                started_at = asyncio.get_running_loop().time()
+                await self._evaluate(revision, transcript, conversation)
+                current = self._latest
+                if not current or current[0] == revision:
+                    return
+                elapsed = asyncio.get_running_loop().time() - started_at
+                interval = self.services.settings.topic_observer_interval_ms / 1_000
+                if elapsed < interval:
+                    await asyncio.sleep(interval - elapsed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Topic observer failed session=%s", self.session_id)
+
+    async def _evaluate(
+        self,
+        revision: int,
+        transcript: TranscriptMessage,
+        conversation: str,
+    ) -> None:
+        if len(conversation.split()) < self.services.settings.topic_observer_min_words:
+            return
+        evaluation_started = asyncio.get_running_loop().time()
+        shown = tuple(
+            await self.services.memory.recent_insight_texts(
+                self.session_id,
+                limit=8,
+            )
+        )
+        detection = await self.services.topic_observer.detect(
+            conversation,
+            language=transcript.language,
+            shown_insights=shown,
+            explained_angles=self.services.detector.explained_subject_angles(
+                self.session_id
+            ),
+        )
+        logger.info(
+            "Topic evaluated session=%s event=%s revision=%d triggered=%s "
+            "intent=%s confidence=%.2f topic=%s subject=%s angle=%s scope=%s reason=%s",
+            self.session_id,
+            transcript.event_id,
+            revision,
+            detection.should_trigger,
+            detection.intent,
+            detection.confidence,
+            detection.topic,
+            detection.subject,
+            detection.angle,
+            detection.knowledge_scope,
+            detection.reason,
+        )
+        if (
+            not detection.should_trigger
+            or detection.confidence
+            < self.services.settings.topic_observer_min_confidence
+            or detection.requires_current_information
+            or self.services.detector.subject_angle_was_explained(
+                self.session_id,
+                detection.subject,
+                detection.angle,
+            )
+        ):
+            return
+
+        memories = await self.services.memory.relevant(self.client_id, conversation)
+        try:
+            insight = await self.services.insights.generate(
+                self.session_id,
+                conversation,
+                detection,
+                memories,
+                detection.source_text or transcript.text,
+                transcript.language,
+            )
+        except OllamaError:
+            logger.debug("Topic insight generation unavailable session=%s", self.session_id)
+            return
+        insight.text = sanitize_insight_text(
+            insight.text,
+            transcript.language,
+            self.services.settings.insight_max_characters,
+        )
+
+        async with self.insight_lock:
+            current = self._latest
+            source_is_current = bool(
+                current
+                and self._source_supported(
+                    detection.source_text or "",
+                    current[2],
+                )
+            )
+            repeated_angle = self.services.detector.subject_angle_was_explained(
+                self.session_id,
+                detection.subject,
+                detection.angle,
+            )
+            freshness = self.services.freshness.validate(
+                insight,
+                detection,
+                elapsed_seconds=(
+                    asyncio.get_running_loop().time() - evaluation_started
+                ),
+                max_age_seconds=(
+                    self.services.settings.topic_observer_max_age_seconds
+                ),
+                source_is_current=source_is_current,
+                repeated=(
+                    repeated_angle
+                    or self.services.detector.is_repeated_insight(
+                        self.session_id,
+                        insight.text,
+                    )
+                ),
+            )
+            if not freshness.accepted:
+                logger.info(
+                    "Topic insight discarded session=%s event=%s reason=%s",
+                    self.session_id,
+                    transcript.event_id,
+                    freshness.reason,
+                )
+                return
+
+            await self.services.memory.store_insight(insight)
+            self.services.detector.record_insight(self.session_id, insight.text)
+            self.services.detector.record_explained_subject(
+                self.session_id,
+                detection.subject,
+                detection.angle,
+            )
+            logger.info(
+                "Topic insight emitted session=%s event=%s insight=%s",
+                self.session_id,
+                transcript.event_id,
+                insight.id,
+            )
+            await _send_json(
+                self.websocket,
+                self.send_lock,
+                _insight_payload(
+                    insight,
+                    event_id=transcript.event_id,
+                    # Keep the existing client protocol enum compatible. The
+                    # server log identifies this as topic-observer output.
+                    source="final",
+                ),
+            )
+
+    @staticmethod
+    def _source_supported(source_text: str, conversation: str) -> bool:
+        source = " ".join(source_text.casefold().split())
+        current = " ".join(conversation.casefold().split())
+        if not source:
+            return False
+        if source in current:
+            return True
+        source_terms = {term for term in source.split() if len(term) >= 3}
+        current_terms = {term for term in current.split() if len(term) >= 3}
+        overlap = len(source_terms & current_terms) / max(1, len(source_terms))
+        return overlap >= 0.6
 
 
 def _bearer_token(authorization: str | None) -> str:
@@ -650,12 +869,22 @@ async def websocket_endpoint(
             "partial_insight_min_confidence": (
                 services.settings.partial_insight_min_confidence
             ),
+            "topic_observer": (
+                services.settings.topic_observer_enabled
+                and services.settings.detector_mode == "conversate"
+            ),
+            "topic_observer_debounce_ms": (
+                services.settings.topic_observer_debounce_ms
+            ),
         }
     )
     partial_worker = PartialInsightWorker(
         websocket, send_lock, insight_lock, services, buffer, client_id, session_id
     )
     final_worker = FinalTranscriptWorker(
+        websocket, send_lock, insight_lock, services, client_id, session_id
+    )
+    topic_worker = TopicInsightWorker(
         websocket, send_lock, insight_lock, services, client_id, session_id
     )
 
@@ -687,8 +916,17 @@ async def websocket_endpoint(
                         is_final=transcript.is_final,
                     )
                     await _handle_transcript(
-                        websocket, send_lock, partial_worker, final_worker, services,
-                        buffer, partial_assembler, client_id, session_id, transcript
+                        websocket,
+                        send_lock,
+                        partial_worker,
+                        final_worker,
+                        topic_worker,
+                        services,
+                        buffer,
+                        partial_assembler,
+                        client_id,
+                        session_id,
+                        transcript,
                     )
                 else:
                     await _send_json(
@@ -704,6 +942,7 @@ async def websocket_endpoint(
         await services.memory.flush_partial(session_id)
         await partial_worker.close()
         await final_worker.close()
+        await topic_worker.close()
         await _schedule_session_analysis(services, session_id)
 
 
@@ -712,6 +951,7 @@ async def _handle_transcript(
     send_lock: asyncio.Lock,
     partial_worker: PartialInsightWorker,
     final_worker: FinalTranscriptWorker,
+    topic_worker: TopicInsightWorker,
     services: ServiceContainer,
     buffer: TranscriptBuffer,
     partial_assembler: PartialTranscriptAssembler,
@@ -745,6 +985,14 @@ async def _handle_transcript(
     await services.memory.clear_partial(session_id)
     buffer.add(transcript)
     final_worker.submit(transcript, buffer.latest_text(6), activity_revision)
+    if (
+        services.settings.topic_observer_enabled
+        and services.settings.detector_mode == "conversate"
+    ):
+        topic_worker.submit(
+            transcript,
+            buffer.latest_text(services.settings.topic_observer_context_items),
+        )
 
 
 async def _process_final_transcript(
@@ -852,7 +1100,11 @@ async def _process_final_transcript(
         services.detector.record_insight(session_id, insight.text)
         record_subject = getattr(services.detector, "record_explained_subject", None)
         if record_subject and detection.intent == "definition":
-            record_subject(session_id, detection.subject)
+            record_subject(
+                session_id,
+                detection.subject,
+                detection.angle or "definition",
+            )
         await _send_json(websocket, send_lock, _insight_payload(insight))
 
 

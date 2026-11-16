@@ -1,0 +1,9 @@
+# Regression scenario distilled from an official Conversate export. The useful
+# card depends on several turns and should offer a diagnostic check rather than
+# merely paraphrasing the last sentence.
+FINAL: We generated the enrollment form from the device profile instead of creating every field manually.
+FINAL: One field is disabled, and the enrollment never completes even though the form saves.
+FINAL: The two new parameters look straightforward: one is an integer and one is a boolean.
+FINAL: The boolean parameter works, but the integer parameter fails and we do not know why.
+WAIT: 10
+EXPECT_INSIGHT:
