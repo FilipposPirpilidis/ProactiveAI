@@ -1,0 +1,7 @@
+# Proactive partial regression distilled from a real chatbot-UI discussion.
+# No FINAL action or question is sent: a useful card must arrive during speech.
+PARTIAL: We are building a chatbot screen where the user sends a message and receives generated content plus suggestions for refining the next search.
+PARTIAL: We are building a chatbot screen where the user sends a message and receives generated content plus suggestions for refining the next search. In UIKit the messages appear in a table view with a text field below it.
+PARTIAL: We are building a chatbot screen where the user sends a message and receives generated content plus suggestions for refining the next search. In UIKit the messages appear in a table view with a text field below it. Instead of repeatedly reloading the table, we want to apply each snapshot through a diffable data source while the response arrives.
+WAIT: 6
+EXPECT_INSIGHT:

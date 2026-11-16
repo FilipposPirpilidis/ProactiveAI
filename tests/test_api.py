@@ -151,6 +151,34 @@ class SlowPartialDetector:
         )
 
 
+class ProactiveTechnicalPartialDetector(SlowPartialDetector):
+    async def detect_conversation(self, *args: object, **kwargs: object) -> Detection:
+        return Detection(
+            should_trigger=True,
+            confidence=0.91,
+            reason="stable architecture guidance",
+            intent="architecture_guidance",
+            subject="chat transport",
+            topic="chat implementation",
+            angle="REST streaming versus WebSocket",
+            source_text="stream chatbot updates into a diffable data source",
+            knowledge_scope="stable",
+        )
+
+
+class TechnicalPartialInsightEngine:
+    async def generate(self, session_id: str, *args: object, **kwargs: object) -> Insight:
+        return Insight(
+            session_id=session_id,
+            text=(
+                "Transport choice — Use HTTP streaming for one-way model tokens and "
+                "WebSockets only when both sides need continuous updates."
+            ),
+            intent="architecture_guidance",
+            confidence=0.91,
+        )
+
+
 class SlowFinalFastPartialDetector(SlowPartialDetector):
     async def detect_conversation(self, *args: object, **kwargs: object) -> Detection:
         latest_utterance = str(args[2])
@@ -378,6 +406,49 @@ def test_conversate_partial_ack_does_not_block_stream_and_can_emit_insight(
     monkeypatch.setenv("DETECTOR_MODE", "conversate")
     monkeypatch.setenv("PARTIAL_INSIGHT_DEBOUNCE_MS", "0")
     configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+
+def test_continuous_technical_partial_can_emit_without_question_or_pause(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "proactive-partial.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "conversate")
+    monkeypatch.setenv("PARTIAL_INSIGHT_DEBOUNCE_MS", "0")
+    configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        token = sign_in(client)
+        app.state.services.detector = ProactiveTechnicalPartialDetector()
+        app.state.services.insights = TechnicalPartialInsightEngine()
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=technical-partial",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as socket:
+            socket.receive_json()
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "technical-partial-1",
+                    "text": (
+                        "We stream chatbot updates into a diffable data source and "
+                        "apply each snapshot to the table view as tokens arrive."
+                    ),
+                    "is_final": False,
+                    "language": "en",
+                }
+            )
+
+            acknowledgement = socket.receive_json()
+            insight = socket.receive_json()
+
+            assert acknowledgement["reason"] == "partial"
+            assert insight["type"] == "insight"
+            assert insight["source"] == "partial"
+            assert insight["intent"] == "architecture_guidance"
+            assert insight["event_id"] == "technical-partial-1"
+
     get_settings.cache_clear()
 
     with TestClient(app) as client:

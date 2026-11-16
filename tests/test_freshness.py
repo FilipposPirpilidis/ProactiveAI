@@ -87,3 +87,15 @@ def test_rejects_current_or_fictional_fact_checks() -> None:
 
     assert current_result.reason == "current_information_unavailable"
     assert fictional_result.reason == "unsafe_fact_check_scope"
+
+
+def test_rejects_uncertain_live_technical_guidance() -> None:
+    uncertain = decision("architecture_guidance")
+    uncertain.knowledge_scope = "uncertain"
+
+    result = InsightFreshnessValidator(220).validate(
+        card(), uncertain, elapsed_seconds=1, max_age_seconds=8,
+        source_is_current=True, repeated=False,
+    )
+
+    assert result.reason == "unsafe_knowledge_scope"

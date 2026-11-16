@@ -535,7 +535,11 @@ partial insight is still relevant. Clients may therefore use either stable or ch
 event IDs; `event_id` remains useful for correlating acknowledgements and insight sources.
 
 If a meaningful partial already contains enough information for a card, the server may
-later send this unsolicited event:
+send it without waiting for a question, silence, or a finalized transcript. Eligible
+high-confidence partial cards include definitions, stable technical context, mechanism
+explanations, implementation options, architecture guidance, and tradeoffs, in addition to
+questions, calculations, factual corrections, and warnings. The server may then send this
+unsolicited event:
 
 ```json
 {
@@ -921,6 +925,16 @@ continuous bidirectional WebSockets:
 ```bash
 docker compose --profile simulator run --rm \
   -e SIMULATOR_TEXT_FILE=/input/websocket-rest-architecture.txt \
+  -e SIMULATOR_LANGUAGE=en \
+  simulator
+```
+
+The continuous-speech regression sends only cumulative partial transcripts—no question and no
+final/pause—and expects a proactive technical card:
+
+```bash
+docker compose --profile simulator run --rm \
+  -e SIMULATOR_TEXT_FILE=/input/continuous-technical-guidance.txt \
   -e SIMULATOR_LANGUAGE=en \
   simulator
 ```

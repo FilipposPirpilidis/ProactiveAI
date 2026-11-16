@@ -30,7 +30,16 @@ class InsightFreshnessValidator:
         if detection.requires_current_information:
             return FreshnessDecision(False, "current_information_unavailable")
         if (
-            detection.intent in {"definition", "fact_check", "context"}
+            detection.intent
+            in {
+                "definition",
+                "fact_check",
+                "context",
+                "mechanism",
+                "implementation_option",
+                "architecture_guidance",
+                "tradeoff",
+            }
             and detection.knowledge_scope in {"current", "uncertain"}
         ):
             return FreshnessDecision(False, "unsafe_knowledge_scope")

@@ -218,7 +218,16 @@ class ProactiveDetector:
                 result.reason = "subject_already_explained"
                 return result
             if result.requires_current_information or (
-                result.intent in {"definition", "fact_check", "context"}
+                result.intent
+                in {
+                    "definition",
+                    "fact_check",
+                    "context",
+                    "mechanism",
+                    "implementation_option",
+                    "architecture_guidance",
+                    "tradeoff",
+                }
                 and result.knowledge_scope in {"current", "uncertain"}
             ):
                 result.should_trigger = False
@@ -291,6 +300,11 @@ class ProactiveDetector:
             "to the current topic; correction of a likely factual error; explanation of a term or entity; "
             "a relevant fact from the supplied personal/meeting context; a concrete next step or response "
             "suggestion; a warning, deadline, reminder, task, decision aid, or explicit question. "
+            "Do not wait for a pause, final transcript, or direct question. During continuous technical "
+            "speech, trigger when the latest utterance supports a stable mechanism explanation, concrete "
+            "implementation option, architecture decision rule, or meaningful tradeoff that adds something "
+            "the speaker has not already explained. Use intent `mechanism`, `implementation_option`, "
+            "`architecture_guidance`, or `tradeoff` respectively. "
             "Apply this interruption test before triggering: the card must either answer a real "
             "question, prevent a material misunderstanding, explain a newly important specialist "
             "term, provide a concrete calculation, or give a specific fact or next step that changes "
@@ -351,7 +365,7 @@ class ProactiveDetector:
             "This is the trigger-detection stage only. Never write the final glasses card. Always set "
             "`insight` to null; a separate model writes accepted cards. Return JSON only: "
             '{"should_trigger":bool,"confidence":0..1,"reason":"short","intent":'
-            '"context|entity_context|fact_check|definition|calculation|suggestion|question|reminder|task|decision|warning|none",'
+            '"context|entity_context|fact_check|definition|calculation|suggestion|question|reminder|task|decision|warning|mechanism|implementation_option|architecture_guidance|tradeoff|none",'
             '"insight":"display text or null","people":['
             '{"name":"spoken name","summary":"supported person context",'
             '"confidence":0..1,"evidence":"conversation evidence"}],'
@@ -404,6 +418,10 @@ class ProactiveDetector:
             "context": 0.90,
             "entity_context": 0.90,
             "fact_check": 0.95,
+            "mechanism": 0.85,
+            "implementation_option": 0.85,
+            "architecture_guidance": 0.85,
+            "tradeoff": 0.85,
         }
         return max(self.threshold, intent_thresholds.get(intent, self.threshold))
 

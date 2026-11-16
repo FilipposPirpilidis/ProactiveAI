@@ -300,6 +300,32 @@ async def test_conversate_explains_a_specialist_phrase_inside_narration() -> Non
     assert "narration alone is not a reason" in ollama.last_prompt
 
 
+async def test_conversate_can_trigger_architecture_guidance_without_question_or_pause() -> None:
+    ollama = StructuredDetectionOllama(
+        '{"should_trigger":true,"confidence":0.91,'
+        '"reason":"a stable transport decision rule adds immediate value",'
+        '"intent":"architecture_guidance","insight":null,"people":[],'
+        '"answer_verification":false,"subject":"chat transport",'
+        '"topic":"chat implementation","angle":"REST streaming versus WebSocket",'
+        '"source_text":"update every snapshot in my table view",'
+        '"knowledge_scope":"stable","requires_current_information":false,'
+        '"discourse_mode":"conversation"}'
+    )
+    detector = ProactiveDetector(ollama, mode="conversate", cooldown_seconds=0)  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-architecture",
+        "We update every snapshot in my table view while the chatbot response streams.",
+        "We update every snapshot in my table view while the chatbot response streams.",
+        language="en",
+    )
+
+    assert result.should_trigger is True
+    assert result.intent == "architecture_guidance"
+    assert "Do not wait for a pause" in ollama.last_prompt
+    assert "architecture_guidance" in ollama.last_prompt
+
+
 async def test_current_or_uncertain_fact_check_is_suppressed() -> None:
     ollama = StructuredDetectionOllama(
         '{"should_trigger":true,"confidence":0.99,"reason":"possibly outdated claim",'

@@ -29,6 +29,9 @@ technical_term_aliases:
 - During a sustained technical topic, surface a concrete diagnostic hypothesis,
   troubleshooting check, platform distinction, implementation option, or material constraint
   when it adds information beyond the speakers' words.
+- Do not require a question or a speech pause. During a stable continuous partial transcript,
+  surface a high-confidence technical explanation, implementation approach, architecture rule,
+  or tradeoff as soon as it becomes useful and complete enough for a concise card.
 - When speakers compare technical approaches, provide a concise stable decision rule, missing
   qualification, or meaningful tradeoff even when their explanation is broadly correct. Do not
   merely repeat their conclusion.

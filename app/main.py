@@ -127,6 +127,20 @@ app = FastAPI(title="HomeBuddy Proactive AI", version="2.0.0", lifespan=lifespan
 class PartialInsightWorker:
     """Evaluate only the newest partial without blocking the WebSocket receive loop."""
 
+    PROACTIVE_PARTIAL_INTENTS = {
+        "question",
+        "calculation",
+        "definition",
+        "fact_check",
+        "warning",
+        "context",
+        "mechanism",
+        "implementation_option",
+        "architecture_guidance",
+        "tradeoff",
+        "decision",
+    }
+
     def __init__(
         self,
         websocket: WebSocket,
@@ -259,14 +273,14 @@ class PartialInsightWorker:
             if not detection.should_trigger:
                 return
 
-            # Partials are provisional and frequently contain ASR fragments. Only
-            # high-confidence, immediately useful categories may interrupt before
-            # the utterance finalizes. Lower-value context waits for the final.
+            # Partials are provisional and frequently contain ASR fragments. Allow
+            # high-confidence explanatory and technical-decision cards during
+            # continuous speech so usefulness does not depend on a pause/final.
             if (
                 detection.confidence
                 < self.services.settings.partial_insight_min_confidence
                 or detection.intent
-                not in {"question", "calculation", "definition", "fact_check", "warning"}
+                not in self.PROACTIVE_PARTIAL_INTENTS
             ):
                 return
 
