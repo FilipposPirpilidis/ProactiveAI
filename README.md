@@ -910,7 +910,8 @@ span remains part of the active rolling topic.
 | `QUESTION_INSIGHT_POLICY` | `always` | `always`, `unanswered_or_incorrect`, or `incorrect_only` |
 | `QUESTION_ANSWER_GRACE_SECONDS` | `2` | Brief wait for a human answer before evaluating the question |
 | `QUESTION_TRACKING_SECONDS` | `15` | Maximum age of turns retained by the question observer |
-| `QUESTION_VERIFICATION_CONFIDENCE` | `0.90` | Minimum confidence required to display a question result |
+| `QUESTION_ANSWER_CONFIDENCE` | `0.70` | Minimum confidence for answering an unanswered or correctly answered stable question |
+| `QUESTION_VERIFICATION_CONFIDENCE` | `0.85` | Higher confidence required to declare a human answer partial or incorrect |
 | `QUESTION_OBSERVER_CONTEXT_ITEMS` | `10` | Maximum finalized turns retained for question/answer matching |
 | `INSIGHT_TARGET_CHARACTERS` | `260` | Soft target for each glasses card; shorter complete answers remain valid |
 | `INSIGHT_MAX_CHARACTERS` | `340` | Hard UI safety ceiling; oversized output is cut at a sentence or word boundary |

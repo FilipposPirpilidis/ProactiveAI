@@ -125,3 +125,21 @@ def test_question_fingerprint_ignores_speaker_label_case_and_accents() -> None:
     assert QuestionObserver.fingerprint(
         "Speaker 1: Ποια είναι η πρωτεύουσα;"
     ) == QuestionObserver.fingerprint("ποια ειναι η ΠΡΩΤΕΥΟΥΣΑ")
+
+
+def test_unanswered_and_correct_questions_use_answer_threshold() -> None:
+    for status in ("unanswered", "correct"):
+        assert QuestionObserver.minimum_confidence(
+            status,
+            answer_confidence=0.70,
+            verification_confidence=0.85,
+        ) == 0.70
+
+
+def test_partial_and_incorrect_answers_use_verification_threshold() -> None:
+    for status in ("partially_correct", "incorrect"):
+        assert QuestionObserver.minimum_confidence(
+            status,
+            answer_confidence=0.70,
+            verification_confidence=0.85,
+        ) == 0.85

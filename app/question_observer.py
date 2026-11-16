@@ -141,6 +141,18 @@ Return JSON only with exactly this shape:
         return QuestionObserver._normalize(text)
 
     @staticmethod
+    def minimum_confidence(
+        answer_status: str,
+        *,
+        answer_confidence: float,
+        verification_confidence: float,
+    ) -> float:
+        """Use a lower gate for answering than for correcting another speaker."""
+        if answer_status in {"unanswered", "correct"}:
+            return answer_confidence
+        return verification_confidence
+
+    @staticmethod
     def _normalize(text: str) -> str:
         text = re.sub(
             r"^\s*(?:(?:speaker\s+\d+)|(?:owner)|(?:unknown))\s*:\s*",

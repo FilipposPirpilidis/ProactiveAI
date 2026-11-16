@@ -755,10 +755,24 @@ class QuestionInsightWorker:
             if detection.reason != "question_observer_unavailable":
                 self._remember_handled(detection.question_text)
             return
-        if (
-            detection.confidence
-            < self.services.settings.question_verification_confidence
-        ):
+        minimum_confidence = QuestionObserver.minimum_confidence(
+            detection.answer_status,
+            answer_confidence=(
+                self.services.settings.question_answer_confidence
+            ),
+            verification_confidence=(
+                self.services.settings.question_verification_confidence
+            ),
+        )
+        if detection.confidence < minimum_confidence:
+            logger.info(
+                "Question rejected session=%s status=%s confidence=%.2f "
+                "threshold=%.2f reason=below_confidence_threshold",
+                self.session_id,
+                detection.answer_status,
+                detection.confidence,
+                minimum_confidence,
+            )
             return
         if detection.requires_current_information or detection.knowledge_scope != "stable":
             self._remember_handled(detection.question_text)
@@ -1105,6 +1119,12 @@ async def websocket_endpoint(
             "question_insight_policy": services.settings.question_insight_policy,
             "question_answer_grace_seconds": (
                 services.settings.question_answer_grace_seconds
+            ),
+            "question_answer_confidence": (
+                services.settings.question_answer_confidence
+            ),
+            "question_verification_confidence": (
+                services.settings.question_verification_confidence
             ),
         }
     )
