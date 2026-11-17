@@ -104,12 +104,12 @@ def test_topic_source_can_remain_current_after_new_speech() -> None:
 def test_topic_intents_use_risk_adjusted_confidence_floors() -> None:
     from app.main import TopicInsightWorker
 
-    assert TopicInsightWorker.minimum_confidence("definition", 0.72) == 0.75
-    assert TopicInsightWorker.minimum_confidence("technical_context", 0.72) == 0.75
+    assert TopicInsightWorker.minimum_confidence("definition", 0.70) == 0.70
+    assert TopicInsightWorker.minimum_confidence("technical_context", 0.70) == 0.72
     assert TopicInsightWorker.minimum_confidence("implementation_option", 0.72) == 0.75
     assert TopicInsightWorker.minimum_confidence("architecture_guidance", 0.72) == 0.72
     assert TopicInsightWorker.minimum_confidence("tradeoff", 0.72) == 0.75
-    assert TopicInsightWorker.minimum_confidence("mechanism", 0.70) == 0.72
+    assert TopicInsightWorker.minimum_confidence("mechanism", 0.70) == 0.70
     assert TopicInsightWorker.minimum_confidence("diagnostic_hypothesis", 0.72) == 0.85
     assert TopicInsightWorker.minimum_confidence("risk_or_constraint", 0.72) == 0.85
     assert TopicInsightWorker.minimum_confidence("fact_check", 0.72) == 0.95

@@ -87,6 +87,8 @@ class ServiceContainer:
         self.question_observer = QuestionObserver(
             self.trigger_ollama,
             self.rules.instructions,
+            settings.insight_target_characters,
+            settings.insight_max_characters,
         )
         self.insights = InsightEngine(
             self.insight_ollama,
@@ -705,12 +707,12 @@ class TopicInsightWorker:
     def minimum_confidence(intent: str, configured_minimum: float) -> float:
         """Keep risky cards strict while allowing safe explanations sooner."""
         protected_thresholds = {
-            "definition": 0.75,
-            "technical_context": 0.75,
+            "definition": 0.70,
+            "technical_context": 0.72,
             "implementation_option": 0.75,
             "architecture_guidance": 0.72,
             "tradeoff": 0.75,
-            "mechanism": 0.72,
+            "mechanism": 0.70,
             "platform_difference": 0.80,
             "troubleshooting_step": 0.80,
             "risk_or_constraint": 0.85,
@@ -805,14 +807,18 @@ class QuestionInsightWorker:
     def submit(self, transcript: TranscriptMessage) -> None:
         now = asyncio.get_running_loop().time()
         self._turns.append((now, transcript))
-        if (
-            self.services.question_observer.is_question_candidate(
-                transcript.text,
-                transcript.language,
-            )
-            and calculate_spoken_expression(transcript.text) is not None
-        ):
+        is_question = self.services.question_observer.is_question_candidate(
+            transcript.text,
+            transcript.language,
+        )
+        if is_question and calculate_spoken_expression(transcript.text) is not None:
             self._remember_handled(transcript.text)
+            return
+        # Only a direct question schedules this worker. Later answers remain in
+        # its rolling context but flow through the normal final detector, where
+        # a wrong or incomplete claim can independently trigger a correction.
+        if not is_question:
+            return
         self._revision += 1
         if not self._task or self._task.done():
             self._task = asyncio.create_task(self._run())
@@ -940,6 +946,13 @@ class QuestionInsightWorker:
                 )
                 if insight is None:
                     return
+            elif detection.insight:
+                insight = Insight(
+                    session_id=self.session_id,
+                    text=detection.insight,
+                    intent=detection.intent,
+                    confidence=detection.confidence,
+                )
             else:
                 insight = await self.services.insights.generate(
                     self.session_id,

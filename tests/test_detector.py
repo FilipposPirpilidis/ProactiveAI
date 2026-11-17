@@ -72,6 +72,27 @@ async def test_conversate_prompt_prioritizes_ai_terms_and_protects_private_names
     assert "Never request web lookup for a bare name" in ollama.last_prompt
 
 
+async def test_short_named_framework_reaches_explanation_classifier() -> None:
+    ollama = TechnicalTermOllama()
+    detector = ProactiveDetector(
+        ollama,  # type: ignore[arg-type]
+        mode="conversate",
+        threshold=0.72,
+        cooldown_seconds=0,
+    )
+
+    result = await detector.detect_conversation(
+        "session-short-term",
+        "We use Combine.",
+        "We use Combine.",
+        language="en",
+    )
+
+    assert result.should_trigger is True
+    assert result.intent == "definition"
+    assert "primary proactive behavior" in ollama.last_prompt
+
+
 class EntityRoleOllama:
     def __init__(self) -> None:
         self.last_prompt = ""

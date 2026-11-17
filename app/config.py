@@ -49,15 +49,15 @@ class Settings(BaseSettings):
     partial_insight_cooldown_seconds: float = Field(default=12.0, ge=0, le=300)
     partial_insight_min_words: int = Field(default=5, ge=1, le=100)
     partial_insight_min_confidence: float = Field(default=0.85, ge=0, le=1)
-    partial_definition_min_confidence: float = Field(default=0.80, ge=0, le=1)
+    partial_definition_min_confidence: float = Field(default=0.72, ge=0, le=1)
     partial_technical_min_confidence: float = Field(default=0.70, ge=0, le=1)
     partial_insight_max_age_seconds: float = Field(default=8.0, ge=0.5, le=120)
     final_insight_max_age_seconds: float = Field(default=30.0, ge=1, le=300)
     topic_observer_enabled: bool = True
     topic_observer_debounce_ms: int = Field(default=1_500, ge=0, le=30_000)
     topic_observer_interval_ms: int = Field(default=3_500, ge=500, le=120_000)
-    topic_observer_min_words: int = Field(default=18, ge=5, le=1_000)
-    topic_observer_min_confidence: float = Field(default=0.72, ge=0, le=1)
+    topic_observer_min_words: int = Field(default=12, ge=5, le=1_000)
+    topic_observer_min_confidence: float = Field(default=0.70, ge=0, le=1)
     topic_observer_max_age_seconds: float = Field(default=90.0, ge=5, le=600)
     topic_observer_context_items: int = Field(default=24, ge=3, le=100)
     question_observer_enabled: bool = True
@@ -65,7 +65,7 @@ class Settings(BaseSettings):
         default="always",
         pattern="^(always|unanswered_or_incorrect|incorrect_only)$",
     )
-    question_answer_grace_seconds: float = Field(default=1.5, ge=0, le=15)
+    question_answer_grace_seconds: float = Field(default=0.25, ge=0, le=15)
     question_tracking_seconds: float = Field(default=15.0, ge=2, le=120)
     question_answer_confidence: float = Field(default=0.70, ge=0, le=1)
     question_verification_confidence: float = Field(default=0.85, ge=0, le=1)

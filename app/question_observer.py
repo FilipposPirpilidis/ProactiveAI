@@ -23,9 +23,17 @@ class QuestionObserver:
         ),
     }
 
-    def __init__(self, ollama: OllamaClient, rules_instructions: str = "") -> None:
+    def __init__(
+        self,
+        ollama: OllamaClient,
+        rules_instructions: str = "",
+        target_characters: int = 260,
+        max_characters: int = 340,
+    ) -> None:
         self.ollama = ollama
         self.rules_instructions = rules_instructions.strip()
+        self.target_characters = target_characters
+        self.max_characters = max_characters
 
     @classmethod
     def is_question_candidate(cls, text: str, language: str | None = None) -> bool:
@@ -51,13 +59,8 @@ class QuestionObserver:
         latest_utterance: str,
         language: str | None = None,
     ) -> bool:
-        """Return true when the question observer should own this final turn."""
-        if cls.is_question_candidate(latest_utterance, language):
-            return True
-        turns = [line.strip() for line in conversation.splitlines() if line.strip()]
-        if len(turns) < 2:
-            return False
-        return cls.is_question_candidate(turns[-2], language)
+        """Return true only for a question, never for the following answer."""
+        return cls.is_question_candidate(latest_utterance, language)
 
     async def assess(
         self,
@@ -72,7 +75,8 @@ class QuestionObserver:
         )
         prompt = f"""You are the Question Observer for smart glasses following a live conversation.
 Find the newest objective informational question in FINAL conversation turns. Decide whether a
-later turn answers it and assess that answer. Return one card candidate at most.
+later turn already answers it and assess that answer. Return one card candidate at most. Do not wait
+for a later speaker: an unanswered objective question should receive a useful answer immediately.
 
 Question policy: {policy}
 - `always`: trigger once for every answerable objective question, even when a person answered it correctly.
@@ -86,21 +90,28 @@ question exactly into `question_text`; copy the answer exactly into `human_answe
 unanswered. Put the canonical subject in `subject`. For partial or incorrect answers, copy the
 smallest problematic answer excerpt into `source_text`.
 
+For a stable answerable question, return the COMPLETE user-visible glasses card in `insight` in the
+required output language. Give the direct answer first, aim for about {self.target_characters}
+characters, and never exceed {self.max_characters}. When a human answer is correct, provide the
+authoritative answer or one concise adjacent fact that adds value instead of praising or merely
+repeating the speaker. For a partial answer, supply the missing qualification. For an incorrect
+answer, state the correction directly and calmly. Do not return an outline or commentary about the
+conversation.
+
 Only handle objective questions answerable from stable general knowledge. Ignore rhetorical,
 subjective, interpersonal, preference, private/personal, fictional, incomplete, incoherent, and
 explicit arithmetic questions (the deterministic calculator handles arithmetic). If reliable
 verification needs current news, weather, traffic, prices, schedules, web search, private context,
 or missing information, set status `unverifiable`, set `knowledge_scope` to `current` when
-appropriate, set `requires_current_information` true, and do not trigger; an optional downstream web
-lane may handle it. Questions explicitly asking who a clearly public figure is, what public role they
+appropriate, set `requires_current_information` true, set `insight` to null, and do not trigger; an
+optional downstream web lane may handle it. Questions explicitly asking who a clearly public figure is, what public role they
 currently hold, or what they publicly announced may be marked this way. Never route a bare name, a
 private acquaintance, a conversation participant, or identity inference from sparse clues to web
 search. Never guess. A response such as `I don't know` leaves the question unanswered.
 Treat ASR without question punctuation normally when the wording is clearly a question.
 
 Do not handle a question already listed as handled. A repeated question is eligible only when it is
-explicitly asked again as a new turn. The final card is written by another model: always set insight
-to null.
+explicitly asked again as a new turn.
 
 {language_instruction(language)}
 Trusted deployment rules:
@@ -113,19 +124,19 @@ Final turns, oldest to newest:
 {numbered_turns}
 
 Return JSON only with exactly this shape:
-{{"should_trigger":bool,"confidence":0..1,"reason":"short","intent":"question|fact_check|none","insight":null,"people":[],"answer_verification":bool,"answer_status":"none|unanswered|correct|partially_correct|incorrect|unverifiable","question_text":"exact question or null","human_answer":"exact answer or null","subject":"canonical subject or null","topic":"question topic or null","angle":"direct_answer|answer_completion|answer_correction|none","source_text":"supporting excerpt or null","knowledge_scope":"stable|current|personal|uncertain|fictional_context","requires_current_information":bool,"discourse_mode":"conversation|lecture|narration|fiction|unknown"}}"""
+{{"should_trigger":bool,"confidence":0..1,"reason":"short","intent":"question|fact_check|none","insight":"finished card or null","people":[],"answer_verification":bool,"answer_status":"none|unanswered|correct|partially_correct|incorrect|unverifiable","question_text":"exact question or null","human_answer":"exact answer or null","subject":"canonical subject or null","topic":"question topic or null","angle":"direct_answer|answer_completion|answer_correction|none","source_text":"supporting excerpt or null","knowledge_scope":"stable|current|personal|uncertain|fictional_context","requires_current_information":bool,"discourse_mode":"conversation|lecture|narration|fiction|unknown"}}"""
         try:
             raw = await self.ollama.chat(
                 [{"role": "user", "content": prompt}],
                 json_output=True,
             )
             detection = Detection.model_validate(json.loads(raw))
-            detection.insight = None
             if not detection.question_text:
                 detection.should_trigger = False
                 detection.reason = "question_not_identified"
             if detection.answer_status == "unverifiable":
                 detection.should_trigger = False
+                detection.insight = None
             if policy == "unanswered_or_incorrect" and detection.answer_status == "correct":
                 detection.should_trigger = False
                 detection.reason = "correct_answer_policy_silent"

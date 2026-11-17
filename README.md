@@ -461,7 +461,7 @@ The server first sends:
   "partial_insight_interval_ms": 2000,
   "partial_insight_min_words": 5,
   "partial_insight_min_confidence": 0.85,
-  "partial_definition_min_confidence": 0.80,
+  "partial_definition_min_confidence": 0.72,
   "partial_technical_min_confidence": 0.70,
   "profile_detection": false,
   "available_profiles": ["general"],
@@ -878,16 +878,19 @@ offering a practical alternative. The generated card answers the newest question
 transcript remains context only. Distinct questions on the same topic are not suppressed merely
 because their answers repeat place or subject names.
 
-In `conversate` mode, the question observer owns finalized objective questions and their immediate
-human answers. It waits briefly for another speaker, then classifies the pair as `unanswered`,
-`correct`, `partially_correct`, `incorrect`, or `unverifiable`. The default `always` policy emits one
-concise authoritative card for every stable, answerable question even when another speaker answered
-correctly. Partial answers receive the missing qualification, while incorrect answers receive a
-direct `fact_check` correction. Questions requiring current news, weather, prices, schedules, private
-data, or other live information remain silent rather than being guessed.
+In `conversate` mode, the question observer owns only finalized objective questions. After a small
+250 ms transcript-settling delay, it classifies the question and normally returns the finished short
+answer in the same cloud call. It does not deliberately wait for another speaker. The default
+`always` policy emits one concise authoritative card for every stable, answerable question.
 
-The observer fingerprints each question and emits at most one card for it. Its short grace period
-also prevents a fast human reply from making the original question result stale. Subjective,
+Later human answers flow independently through the final detector. Correct answers remain quiet
+unless a definition, mechanism, or adjacent fact adds real value; partial answers may receive the missing qualification and
+incorrect answers may receive a direct `fact_check` correction. The recent question still provides
+context for that verification. Questions requiring current news, weather, prices, schedules, private
+data, or other live information remain silent unless the optional web-grounding lane can support
+them reliably.
+
+The observer fingerprints each question and emits at most one direct-answer card for it. Subjective,
 interpersonal, rhetorical, fictional, incomplete, and incoherent questions are excluded. Explicit
 arithmetic remains in the deterministic calculator lane. Unstable partial replies wait for finalized
 transcript before verification.
@@ -1015,20 +1018,20 @@ as untrusted evidence, not as instructions.
 | `PARTIAL_INSIGHT_COOLDOWN_SECONDS` | `12` | Cooldown for high-value cards found in partial speech; final cards retain `INSIGHT_COOLDOWN_SECONDS` |
 | `PARTIAL_INSIGHT_MIN_WORDS` | `5` | Minimum stable words required before evaluating provisional speech |
 | `PARTIAL_INSIGHT_MIN_CONFIDENCE` | `0.85` | Minimum confidence required to display a provisional card |
-| `PARTIAL_DEFINITION_MIN_CONFIDENCE` | `0.80` | Lower provisional gate used only for definitions and explicit knowledge gaps |
+| `PARTIAL_DEFINITION_MIN_CONFIDENCE` | `0.72` | Lower provisional gate used only for safe definitions and explicit knowledge gaps |
 | `PARTIAL_TECHNICAL_MIN_CONFIDENCE` | `0.70` | Lower gate used only for stable mechanism, implementation, architecture, and tradeoff cards during continuous speech |
 | `PARTIAL_INSIGHT_MAX_AGE_SECONDS` | `8` | Discard a provisional card when generation finishes too late |
 | `FINAL_INSIGHT_MAX_AGE_SECONDS` | `30` | Discard a final card when generation finishes too late |
 | `TOPIC_OBSERVER_ENABLED` | `true` | Enable the finalized multi-turn topic-observer lane |
 | `TOPIC_OBSERVER_DEBOUNCE_MS` | `1500` | Wait briefly for a stable multi-turn span before topic evaluation |
 | `TOPIC_OBSERVER_INTERVAL_MS` | `3500` | Minimum start-to-start interval between topic evaluations |
-| `TOPIC_OBSERVER_MIN_WORDS` | `18` | Minimum active-topic context before evaluation |
-| `TOPIC_OBSERVER_MIN_CONFIDENCE` | `0.72` | Base threshold for stable topic insights; implementation/tradeoff require `0.75`, diagnosis/risk `0.85`, and fact checks `0.95` |
+| `TOPIC_OBSERVER_MIN_WORDS` | `12` | Minimum active-topic context before evaluation |
+| `TOPIC_OBSERVER_MIN_CONFIDENCE` | `0.70` | Base threshold for safe explanation candidates; riskier topic intents retain higher code-enforced floors |
 | `TOPIC_OBSERVER_MAX_AGE_SECONDS` | `90` | Maximum generation age while its source remains in the active topic |
 | `TOPIC_OBSERVER_CONTEXT_ITEMS` | `24` | Maximum finalized utterances supplied to the topic observer |
 | `QUESTION_OBSERVER_ENABLED` | `true` | Enable finalized question/answer tracking in `conversate` mode |
 | `QUESTION_INSIGHT_POLICY` | `always` | `always`, `unanswered_or_incorrect`, or `incorrect_only` |
-| `QUESTION_ANSWER_GRACE_SECONDS` | `1.5` | Brief wait for a human answer before evaluating the question |
+| `QUESTION_ANSWER_GRACE_SECONDS` | `0.25` | Small transcript-settling delay before answering; later human answers are evaluated independently |
 | `QUESTION_TRACKING_SECONDS` | `15` | Maximum age of turns retained by the question observer |
 | `QUESTION_ANSWER_CONFIDENCE` | `0.70` | Minimum confidence for answering an unanswered or correctly answered stable question |
 | `QUESTION_VERIFICATION_CONFIDENCE` | `0.85` | Higher confidence required to declare a human answer partial or incorrect |

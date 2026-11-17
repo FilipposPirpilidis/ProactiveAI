@@ -296,8 +296,10 @@ class ProactiveDetector:
             "When the latest utterance appears to answer an objective question or respond to a factual "
             "statement in the immediately preceding conversation turn, verify the response using reliable "
             "knowledge. A short reply, including a number or yes/no, still counts as a possible answer. "
-            "If it is correct and adequate, normally stay silent. If it is factually wrong, endorses a "
-            "wrong prior claim, or is materially misleading, trigger "
+            "If it is correct and adequate, do not merely confirm or repeat it, but it may still trigger "
+            "a concise `context`, `definition`, or `mechanism` card when one adjacent explanation adds "
+            "specific value and helps the wearer understand why the answer is correct. If it is factually "
+            "wrong, endorses a wrong prior claim, or is materially misleading, trigger "
             "with intent `fact_check` and give the corrected answer. If verification depends on missing, "
             "current, personal, or uncertain information, do not guess. A correction may repeat the core "
             "fact from an earlier assistant card because the latest human answer newly conflicts with it. "
@@ -326,9 +328,12 @@ class ProactiveDetector:
             "added value. Fragmentary narration such as `the agents leaked` or `the story says roughly` "
             "must not trigger without enough context for a concrete and reliable addition. "
             "Also proactively trigger when the latest utterance newly introduces an unexplained acronym, "
-            "specialist phrase, named technical method, protocol, standard, scientific concept, mechanism, "
-            "or difficult reference that a knowledgeable non-expert may not understand and a plain "
-            "one-sentence explanation would materially help them follow the conversation. This applies "
+            "framework, library, API, model name, specialist phrase, named technical method, protocol, "
+            "standard, scientific concept, mechanism, or difficult reference that a knowledgeable "
+            "non-expert may not understand and a plain one-sentence explanation would materially help "
+            "them follow the conversation. Treat explanation as a primary proactive behavior, not merely "
+            "a fallback for explicit questions. A central term is eligible when it supports an argument "
+            "or decision but has not been explained, even if the speakers appear familiar with it. This applies "
             "inside ordinary conversation, lectures, narration, and stories: narration alone is not a "
             "reason to suppress a genuinely useful technical explanation. Multi-word concepts such as "
             "`water pressure zone` are eligible even when they are not acronyms. Examples "
@@ -342,7 +347,8 @@ class ProactiveDetector:
             "explained. Do not require anyone to ask what it means. Do not trigger for an ordinary "
             "company/person name alone, a universally familiar abbreviation in this context, a term "
             "already explained in recent conversation or a displayed card, or when the speaker is "
-            "currently defining it themselves. "
+            "currently defining it themselves. Use `mechanism` rather than `definition` when how the "
+            "concept works is the useful missing piece. "
             "For factual corrections, trigger only when the LATEST UTTERANCE contains a material, "
             "objectively false claim that can be corrected using stable general knowledge with very high "
             "confidence. A standalone declarative claim is eligible: do not require a preceding question, "
@@ -442,10 +448,10 @@ class ProactiveDetector:
     def _minimum_confidence(self, intent: str) -> float:
         intent_thresholds = {
             "question": 0.80,
-            "definition": 0.80,
+            "definition": 0.72,
             "context": 0.90,
             "entity_context": 0.90,
-            "knowledge_gap": 0.84,
+            "knowledge_gap": 0.72,
             "fact_check": 0.95,
             "mechanism": 0.70,
             "implementation_option": 0.70,
@@ -491,7 +497,21 @@ class ProactiveDetector:
     def _has_technical_reference(text: str) -> bool:
         acronyms = re.findall(r"\b[A-Z][A-Z0-9-]{1,9}\b", text)
         ignored = {"AI", "AM", "PM", "TV", "OK", "ID"}
-        return any(acronym not in ignored for acronym in acronyms)
+        if any(acronym not in ignored for acronym in acronyms):
+            return True
+        # Short utterances such as "We use Combine" would otherwise never
+        # reach the classifier because they contain fewer than four words.
+        # Keep this vocabulary technical so ordinary proper names do not become
+        # explanation candidates.
+        return bool(
+            re.search(
+                r"\b(?:Combine|Observable|SwiftUI|UIKit|WebSockets?|OAuth|OIDC|"
+                r"Docker|Kubernetes|Ollama|FastAPI|Soniox|CoreData|WorkManager|"
+                r"Doze|RAG|RLHF|LoRA|MVVM|PKCE|GraphQL|gRPC)\b",
+                text,
+                flags=re.IGNORECASE,
+            )
+        )
 
     @classmethod
     def _looks_like_spoken_question(cls, text: str, language: str | None) -> bool:

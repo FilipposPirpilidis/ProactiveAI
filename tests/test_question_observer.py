@@ -22,7 +22,7 @@ def response(
         '{"should_trigger":'
         + str(should_trigger).lower()
         + ',"confidence":0.96,"reason":"question assessed",'
-        + f'"intent":"{intent}","insight":null,"people":[],'
+        + f'"intent":"{intent}","insight":"Canberra is the capital of Australia.","people":[],'
         + f'"answer_verification":{str(status != "unanswered").lower()},'
         + f'"answer_status":"{status}",'
         + '"question_text":"What is the capital of Australia?",'
@@ -52,7 +52,9 @@ async def test_always_policy_emits_even_when_human_answer_is_correct() -> None:
     assert result.answer_status == "correct"
     assert result.answer_verification is True
     assert result.intent == "question"
+    assert result.insight == "Canberra is the capital of Australia."
     assert "even when a person answered it correctly" in ollama.last_prompt
+    assert "COMPLETE user-visible glasses card" in ollama.last_prompt
 
 
 async def test_unanswered_or_incorrect_policy_suppresses_correct_answer() -> None:
@@ -130,12 +132,12 @@ async def test_public_person_questions_are_web_candidates_but_private_names_are_
     assert "Never route a bare name" in ollama.last_prompt
 
 
-def test_greek_spoken_question_is_owned_without_question_mark() -> None:
+def test_question_observer_owns_only_the_question_not_the_following_answer() -> None:
     assert QuestionObserver.is_question_candidate(
         "Ποια είναι η πρωτεύουσα της Αυστραλίας",
         "el",
     )
-    assert QuestionObserver.owns_latest_turn(
+    assert not QuestionObserver.owns_latest_turn(
         "Ποια είναι η πρωτεύουσα της Αυστραλίας\nΗ Καμπέρα",
         "Η Καμπέρα",
         "el",
