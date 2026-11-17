@@ -16,6 +16,7 @@ from app.freshness import InsightFreshnessValidator
 from app.insights import InsightEngine, captured_insight_text, sanitize_insight_text
 from app.memory import MemoryEngine
 from app.models import (
+    Detection,
     FeedbackMessage,
     Insight,
     InsightReceiptMessage,
@@ -28,6 +29,7 @@ from app.question_observer import QuestionObserver
 from app.session_analysis import SessionAnalyzer
 from app.topic_observer import TopicObserver
 from app.rules import ConversateRules, SessionLanguageResolver
+from app.web_search import WebSearchClient, WebSearchError
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +94,14 @@ class ServiceContainer:
             settings.insight_max_characters,
             self.rules.instructions,
         )
+        self.web_search = WebSearchClient(
+            enabled=settings.web_search_enabled,
+            api_key=settings.web_search_api_key,
+            url=settings.web_search_url,
+            timeout_seconds=settings.web_search_timeout_seconds,
+            max_results=settings.web_search_max_results,
+            cache_ttl_seconds=settings.web_search_cache_ttl_seconds,
+        )
         self.session_analyzer = SessionAnalyzer(
             self.insight_ollama,
             settings.insight_max_characters,
@@ -119,6 +129,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await services.memory.close()
     await services.trigger_ollama.close()
     await services.insight_ollama.close()
+    await services.web_search.close()
 
 
 app = FastAPI(title="HomeBuddy Proactive AI", version="2.0.0", lifespan=lifespan)
@@ -147,6 +158,7 @@ class PartialInsightWorker:
         "architecture_guidance",
         "tradeoff",
     }
+    DEFINITION_PARTIAL_INTENTS = {"definition", "knowledge_gap"}
 
     def __init__(
         self,
@@ -283,11 +295,18 @@ class PartialInsightWorker:
             # Partials are provisional and frequently contain ASR fragments. Allow
             # high-confidence explanatory and technical-decision cards during
             # continuous speech so usefulness does not depend on a pause/final.
-            minimum_confidence = (
-                self.services.settings.partial_technical_min_confidence
-                if detection.intent in self.TECHNICAL_PARTIAL_INTENTS
-                else self.services.settings.partial_insight_min_confidence
-            )
+            if detection.intent in self.TECHNICAL_PARTIAL_INTENTS:
+                minimum_confidence = (
+                    self.services.settings.partial_technical_min_confidence
+                )
+            elif detection.intent in self.DEFINITION_PARTIAL_INTENTS:
+                minimum_confidence = (
+                    self.services.settings.partial_definition_min_confidence
+                )
+            else:
+                minimum_confidence = (
+                    self.services.settings.partial_insight_min_confidence
+                )
             if (
                 detection.confidence < minimum_confidence
                 or detection.intent
@@ -686,8 +705,8 @@ class TopicInsightWorker:
     def minimum_confidence(intent: str, configured_minimum: float) -> float:
         """Keep risky cards strict while allowing safe explanations sooner."""
         protected_thresholds = {
-            "definition": 0.78,
-            "technical_context": 0.78,
+            "definition": 0.75,
+            "technical_context": 0.75,
             "implementation_option": 0.75,
             "architecture_guidance": 0.72,
             "tradeoff": 0.75,
@@ -713,6 +732,49 @@ class TopicInsightWorker:
         current_terms = {term for term in current.split() if len(term) >= 3}
         overlap = len(source_terms & current_terms) / max(1, len(source_terms))
         return overlap >= 0.6
+
+
+async def _generate_web_grounded_insight(
+    services: ServiceContainer,
+    session_id: str,
+    detection: Detection,
+    query: str,
+    language: str | None,
+) -> Insight | None:
+    """Run the optional web lane only for an already classified current-info need."""
+    if (
+        not services.web_search.available
+        or detection.confidence < services.settings.web_search_min_confidence
+    ):
+        return None
+    try:
+        results = await services.web_search.search(query)
+        detection.web_grounded = True
+        detection.should_trigger = True
+        if detection.intent == "none":
+            detection.intent = "question"
+        insight = await services.insights.generate_web_grounded(
+            session_id,
+            query,
+            detection,
+            results,
+            language,
+        )
+        logger.info(
+            "Web insight grounded session=%s intent=%s confidence=%.2f results=%d",
+            session_id,
+            detection.intent,
+            detection.confidence,
+            len(results),
+        )
+        return insight
+    except (WebSearchError, OllamaError, ValueError) as exc:
+        logger.warning(
+            "Web insight unavailable session=%s reason=%s",
+            session_id,
+            type(exc).__name__,
+        )
+        return None
 
 
 class QuestionInsightWorker:
@@ -818,18 +880,29 @@ class QuestionInsightWorker:
 
         # Unverifiable, policy-suppressed, and confidently rejected questions
         # are complete decisions. Model outages remain retryable on the next turn.
-        if not detection.should_trigger:
+        web_candidate = bool(
+            self.services.web_search.available
+            and detection.requires_current_information
+            and detection.question_text
+            and detection.confidence
+            >= self.services.settings.web_search_min_confidence
+        )
+        if not detection.should_trigger and not web_candidate:
             if detection.reason != "question_observer_unavailable":
                 self._remember_handled(detection.question_text)
             return
-        minimum_confidence = QuestionObserver.minimum_confidence(
-            detection.answer_status,
-            answer_confidence=(
-                self.services.settings.question_answer_confidence
-            ),
-            verification_confidence=(
-                self.services.settings.question_verification_confidence
-            ),
+        minimum_confidence = (
+            self.services.settings.web_search_min_confidence
+            if web_candidate
+            else QuestionObserver.minimum_confidence(
+                detection.answer_status,
+                answer_confidence=(
+                    self.services.settings.question_answer_confidence
+                ),
+                verification_confidence=(
+                    self.services.settings.question_verification_confidence
+                ),
+            )
         )
         if detection.confidence < minimum_confidence:
             logger.info(
@@ -841,7 +914,13 @@ class QuestionInsightWorker:
                 minimum_confidence,
             )
             return
-        if detection.requires_current_information or detection.knowledge_scope != "stable":
+        if (
+            not web_candidate
+            and (
+                detection.requires_current_information
+                or detection.knowledge_scope != "stable"
+            )
+        ):
             self._remember_handled(detection.question_text)
             return
 
@@ -851,14 +930,25 @@ class QuestionInsightWorker:
             conversation,
         )
         try:
-            insight = await self.services.insights.generate(
-                self.session_id,
-                conversation,
-                detection,
-                memories,
-                detection.question_text,
-                snapshot[-1].language,
-            )
+            if web_candidate:
+                insight = await _generate_web_grounded_insight(
+                    self.services,
+                    self.session_id,
+                    detection,
+                    detection.question_text,
+                    snapshot[-1].language,
+                )
+                if insight is None:
+                    return
+            else:
+                insight = await self.services.insights.generate(
+                    self.session_id,
+                    conversation,
+                    detection,
+                    memories,
+                    detection.question_text,
+                    snapshot[-1].language,
+                )
         except OllamaError as exc:
             logger.warning(
                 "Question insight generation unavailable session=%s",
@@ -1179,6 +1269,9 @@ async def websocket_endpoint(
             "partial_technical_min_confidence": (
                 services.settings.partial_technical_min_confidence
             ),
+            "partial_definition_min_confidence": (
+                services.settings.partial_definition_min_confidence
+            ),
             "topic_observer": (
                 services.settings.topic_observer_enabled
                 and services.settings.detector_mode == "conversate"
@@ -1201,6 +1294,11 @@ async def websocket_endpoint(
             ),
             "question_verification_confidence": (
                 services.settings.question_verification_confidence
+            ),
+            "web_search": services.web_search.available,
+            "web_search_max_results": services.settings.web_search_max_results,
+            "web_search_min_confidence": (
+                services.settings.web_search_min_confidence
             ),
             "insight_receipts": ["received", "displayed"],
         }
@@ -1416,6 +1514,7 @@ async def _process_final_transcript(
         memory_context,
         transcript.language,
         record_trigger=False,
+        allow_current_information=services.web_search.available,
     )
     # Only finalized transcript evidence becomes durable session people memory.
     # Partial observations can still produce a timely card, but remain provisional.
@@ -1423,6 +1522,12 @@ async def _process_final_transcript(
     if not detection.should_trigger:
         await _send_ack(websocket, send_lock, transcript.event_id, False, detection.reason)
         return
+
+    web_candidate = bool(
+        services.web_search.available
+        and detection.requires_current_information
+        and detection.confidence >= services.settings.web_search_min_confidence
+    )
 
     if detection.intent in {"reminder", "task"}:
         await services.memory.remember(client_id, detection.intent, transcript.text)
@@ -1434,6 +1539,23 @@ async def _process_final_transcript(
             intent=detection.intent,
             confidence=detection.confidence,
         )
+    elif web_candidate:
+        insight = await _generate_web_grounded_insight(
+            services,
+            session_id,
+            detection,
+            detection.question_text or detection.subject or transcript.text,
+            transcript.language,
+        )
+        if insight is None:
+            await _send_ack(
+                websocket,
+                send_lock,
+                transcript.event_id,
+                False,
+                "web_search_unavailable",
+            )
+            return
     elif detection.insight:
         insight = Insight(
             session_id=session_id,

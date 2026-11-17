@@ -104,7 +104,8 @@ def test_topic_source_can_remain_current_after_new_speech() -> None:
 def test_topic_intents_use_risk_adjusted_confidence_floors() -> None:
     from app.main import TopicInsightWorker
 
-    assert TopicInsightWorker.minimum_confidence("definition", 0.72) == 0.78
+    assert TopicInsightWorker.minimum_confidence("definition", 0.72) == 0.75
+    assert TopicInsightWorker.minimum_confidence("technical_context", 0.72) == 0.75
     assert TopicInsightWorker.minimum_confidence("implementation_option", 0.72) == 0.75
     assert TopicInsightWorker.minimum_confidence("architecture_guidance", 0.72) == 0.72
     assert TopicInsightWorker.minimum_confidence("tradeoff", 0.72) == 0.75
@@ -113,6 +114,25 @@ def test_topic_intents_use_risk_adjusted_confidence_floors() -> None:
     assert TopicInsightWorker.minimum_confidence("risk_or_constraint", 0.72) == 0.85
     assert TopicInsightWorker.minimum_confidence("fact_check", 0.72) == 0.95
     assert TopicInsightWorker.minimum_confidence("definition", 0.90) == 0.90
+
+
+async def test_topic_observer_prioritizes_mixed_language_ai_terms() -> None:
+    ollama = RecordingOllama(
+        '{"should_trigger":false,"confidence":0.8,"reason":"already explained",'
+        '"intent":"none","insight":null,"people":[],"answer_verification":false,'
+        '"knowledge_scope":"stable","requires_current_information":false,'
+        '"discourse_mode":"conversation"}'
+    )
+    observer = TopicObserver(ollama)  # type: ignore[arg-type]
+
+    await observer.detect(
+        "Στο agentic workflow χρησιμοποιούμε RAG και vector embeddings.",
+        language="el",
+    )
+
+    assert "AI, software, emerging-technology" in ollama.prompt
+    assert "keep that term" in ollama.prompt
+    assert "required output language is Greek" in ollama.prompt
 
 
 async def test_topic_observer_requires_finished_one_pass_card() -> None:

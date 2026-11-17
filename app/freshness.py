@@ -27,7 +27,7 @@ class InsightFreshnessValidator:
     ) -> FreshnessDecision:
         if not source_is_current:
             return FreshnessDecision(False, "stale_source")
-        if detection.requires_current_information:
+        if detection.requires_current_information and not detection.web_grounded:
             return FreshnessDecision(False, "current_information_unavailable")
         if (
             detection.intent
@@ -42,6 +42,7 @@ class InsightFreshnessValidator:
                 "tradeoff",
             }
             and detection.knowledge_scope in {"current", "uncertain"}
+            and not detection.web_grounded
         ):
             return FreshnessDecision(False, "unsafe_knowledge_scope")
         if detection.intent == "fact_check" and detection.knowledge_scope in {

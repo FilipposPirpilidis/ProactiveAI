@@ -461,6 +461,7 @@ The server first sends:
   "partial_insight_interval_ms": 2000,
   "partial_insight_min_words": 5,
   "partial_insight_min_confidence": 0.85,
+  "partial_definition_min_confidence": 0.80,
   "partial_technical_min_confidence": 0.70,
   "profile_detection": false,
   "available_profiles": ["general"],
@@ -964,6 +965,23 @@ Questions and high-priority fast-lane signals may bypass cooldown. The fast lane
 the latest utterance to trigger. The topic observer can use an earlier supporting span while that
 span remains part of the active rolling topic.
 
+### Optional soft web-search lane
+
+Web search is disabled by default. When enabled with an Ollama web-search API key, it is considered
+only for finalized candidates that the detector explicitly marks as requiring current information.
+Stable questions, definitions, calculations, technical guidance, and ordinary corrections keep their
+existing path and incur no search latency. The web lane sends a minimal query rather than the full
+conversation, requests at most three results, caches equivalent queries, and silently falls back when
+search or grounded synthesis cannot produce a reliable answer.
+
+```env
+WEB_SEARCH_ENABLED=true
+WEB_SEARCH_API_KEY=replace-with-an-ollama-web-search-key
+```
+
+Never commit the API key. Web-grounded cards end with the source domain. Search-result text is treated
+as untrusted evidence, not as instructions.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -977,6 +995,13 @@ span remains part of the active rolling topic.
 | `INSIGHT_OLLAMA_BASE_URL` | empty | Model 2 endpoint; empty inherits `OLLAMA_BASE_URL` |
 | `INSIGHT_OLLAMA_MODEL` | empty | Model 2 name; empty inherits `OLLAMA_MODEL` |
 | `INSIGHT_OLLAMA_TIMEOUT_SECONDS` | `30` | Insight-generation timeout |
+| `WEB_SEARCH_ENABLED` | `false` | Enable the optional finalized current-information lane; also requires a key |
+| `WEB_SEARCH_API_KEY` | empty | Ollama web-search API key; keep it only in the deployment `.env` |
+| `WEB_SEARCH_URL` | `https://ollama.com/api/web_search` | Search endpoint |
+| `WEB_SEARCH_TIMEOUT_SECONDS` | `4` | Hard timeout for the search request |
+| `WEB_SEARCH_MAX_RESULTS` | `3` | Maximum grounding results per query |
+| `WEB_SEARCH_CACHE_TTL_SECONDS` | `600` | In-memory cache lifetime for equivalent searches |
+| `WEB_SEARCH_MIN_CONFIDENCE` | `0.80` | Minimum detector confidence before current information can invoke search |
 | `AUTH_USERNAME` | `homebuddy` | Username accepted by the signin endpoint |
 | `AUTH_PASSWORD` | `123456` | Password accepted by the signin endpoint; change before deployment |
 | `AUTH_STATIC_TOKEN` | empty | Optional non-expiring pre-shared bearer token for clients that skip sign-in |
@@ -990,6 +1015,7 @@ span remains part of the active rolling topic.
 | `PARTIAL_INSIGHT_COOLDOWN_SECONDS` | `12` | Cooldown for high-value cards found in partial speech; final cards retain `INSIGHT_COOLDOWN_SECONDS` |
 | `PARTIAL_INSIGHT_MIN_WORDS` | `5` | Minimum stable words required before evaluating provisional speech |
 | `PARTIAL_INSIGHT_MIN_CONFIDENCE` | `0.85` | Minimum confidence required to display a provisional card |
+| `PARTIAL_DEFINITION_MIN_CONFIDENCE` | `0.80` | Lower provisional gate used only for definitions and explicit knowledge gaps |
 | `PARTIAL_TECHNICAL_MIN_CONFIDENCE` | `0.70` | Lower gate used only for stable mechanism, implementation, architecture, and tradeoff cards during continuous speech |
 | `PARTIAL_INSIGHT_MAX_AGE_SECONDS` | `8` | Discard a provisional card when generation finishes too late |
 | `FINAL_INSIGHT_MAX_AGE_SECONDS` | `30` | Discard a final card when generation finishes too late |

@@ -79,6 +79,7 @@ class Detection(BaseModel):
         "stable", "current", "personal", "uncertain", "fictional_context"
     ] = "uncertain"
     requires_current_information: bool = False
+    web_grounded: bool = False
     discourse_mode: Literal[
         "conversation", "lecture", "narration", "fiction", "unknown"
     ] = "unknown"

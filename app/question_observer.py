@@ -90,8 +90,12 @@ Only handle objective questions answerable from stable general knowledge. Ignore
 subjective, interpersonal, preference, private/personal, fictional, incomplete, incoherent, and
 explicit arithmetic questions (the deterministic calculator handles arithmetic). If reliable
 verification needs current news, weather, traffic, prices, schedules, web search, private context,
-or missing information, set status `unverifiable`, set requires_current_information appropriately,
-and do not trigger. Never guess. A response such as `I don't know` leaves the question unanswered.
+or missing information, set status `unverifiable`, set `knowledge_scope` to `current` when
+appropriate, set `requires_current_information` true, and do not trigger; an optional downstream web
+lane may handle it. Questions explicitly asking who a clearly public figure is, what public role they
+currently hold, or what they publicly announced may be marked this way. Never route a bare name, a
+private acquaintance, a conversation participant, or identity inference from sparse clues to web
+search. Never guess. A response such as `I don't know` leaves the question unanswered.
 Treat ASR without question punctuation normally when the wording is clearly a question.
 
 Do not handle a question already listed as handled. A repeated question is eligible only when it is

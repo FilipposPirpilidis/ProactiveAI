@@ -22,6 +22,10 @@ technical_term_aliases:
 - Prefer silence whenever usefulness or factual accuracy is uncertain.
 - Keep unavoidable proper names, product names, acronyms, and technical terms intact.
 - Explain technical terminology in the resolved conversation language.
+- In non-English conversations, preserve canonical English AI, software, API, framework, model,
+  protocol, and product terms exactly while explaining them in the resolved conversation language.
+- During AI, software, emerging-technology, science, and engineering discussions, actively surface
+  concise definitions or mechanisms for newly important acronyms and specialist terms.
 - Explain a newly introduced acronym, specialist phrase, method, protocol, standard,
   scientific concept, or technical mechanism when a non-expert needs it to follow along.
 - Technical explanations remain eligible during lectures, narration, and stories; do not
@@ -59,4 +63,7 @@ technical_term_aliases:
   already answered correctly. Complete partial answers and correct materially wrong answers.
 - Do not answer rhetorical, subjective, interpersonal, private, or current-information questions
   without reliable supplied data.
+- Use optional web grounding only when the candidate explicitly needs current public information.
+  A clearly public figure may be searched only for an explicit identity, public-role, or public-news
+  question/knowledge gap. Never search a bare name, private acquaintance, or conversation participant.
 - Keep every card concise and suitable for a smart-glasses display.

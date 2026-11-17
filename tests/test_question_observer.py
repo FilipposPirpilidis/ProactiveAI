@@ -109,6 +109,27 @@ async def test_current_information_is_never_triggered_without_live_data() -> Non
     assert result.requires_current_information is True
 
 
+async def test_public_person_questions_are_web_candidates_but_private_names_are_not() -> None:
+    ollama = ResponseOllama(
+        response(
+            status="unverifiable",
+            intent="none",
+            should_trigger=False,
+            current=True,
+        )
+    )
+    observer = QuestionObserver(ollama)  # type: ignore[arg-type]
+
+    await observer.assess(
+        ("Who is the current CEO of OpenAI?",),
+        language="en",
+        policy="always",
+    )
+
+    assert "clearly public figure" in ollama.last_prompt
+    assert "Never route a bare name" in ollama.last_prompt
+
+
 def test_greek_spoken_question_is_owned_without_question_mark() -> None:
     assert QuestionObserver.is_question_candidate(
         "Ποια είναι η πρωτεύουσα της Αυστραλίας",

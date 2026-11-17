@@ -121,6 +121,7 @@ class ProactiveDetector:
         record_trigger: bool = True,
         cooldown_seconds: float | None = None,
         verify_followup_answers: bool = True,
+        allow_current_information: bool = False,
     ) -> Detection:
         utterance_without_labels = re.sub(
             r"(?:^|\n)\s*speaker\s+\d+\s*:\s*", " ", latest_utterance, flags=re.IGNORECASE
@@ -217,7 +218,7 @@ class ProactiveDetector:
                 result.should_trigger = False
                 result.reason = "subject_already_explained"
                 return result
-            if result.requires_current_information or (
+            current_information_candidate = result.requires_current_information or (
                 result.intent
                 in {
                     "definition",
@@ -230,10 +231,13 @@ class ProactiveDetector:
                     "tradeoff",
                 }
                 and result.knowledge_scope in {"current", "uncertain"}
-            ):
+            )
+            if current_information_candidate and not allow_current_information:
                 result.should_trigger = False
                 result.reason = "requires_current_or_uncertain_information"
                 return result
+            if current_information_candidate:
+                result.requires_current_information = True
             if result.intent == "fact_check" and result.knowledge_scope in {
                 "personal",
                 "fictional_context",
@@ -328,8 +332,13 @@ class ProactiveDetector:
             "inside ordinary conversation, lectures, narration, and stories: narration alone is not a "
             "reason to suppress a genuinely useful technical explanation. Multi-word concepts such as "
             "`water pressure zone` are eligible even when they are not acronyms. Examples "
-            "include RLHF, RAG, LoRA, PKCE, quantization, backpropagation, synaptic pruning, and "
-            "transformer attention. Use intent `definition` and begin the card with the term being "
+            "include RLHF, RAG, LoRA, PKCE, LLM, agentic workflow, vector embeddings, Combine, "
+            "Observable, quantization, backpropagation, synaptic pruning, and transformer attention. "
+            "AI, software, emerging-technology, science, and engineering discussions deserve especially "
+            "active coverage when a concise definition or mechanism helps the wearer follow along. "
+            "If the conversation language is not English but the canonical technical term is English, "
+            "preserve that English term exactly and explain it in the required output language. Use "
+            "intent `definition` and begin the card with the term being "
             "explained. Do not require anyone to ask what it means. Do not trigger for an ordinary "
             "company/person name alone, a universally familiar abbreviation in this context, a term "
             "already explained in recent conversation or a displayed card, or when the speaker is "
@@ -338,7 +347,15 @@ class ProactiveDetector:
             "objectively false claim that can be corrected using stable general knowledge with very high "
             "confidence. A standalone declarative claim is eligible: do not require a preceding question, "
             "a request for verification, or another speaker's answer. Stay silent when a statement is "
-            "correct. Never fact-check fictional plot events, "
+            "correct. When an otherwise useful candidate depends on current news, a recent technology "
+            "release, a current product/model capability, or current information about a clearly public "
+            "figure, keep should_trigger true, use knowledge_scope `current`, and set "
+            "requires_current_information true so the optional web-grounding stage can decide whether "
+            "to answer. For people, do this only when the latest utterance explicitly asks who a public "
+            "figure is, states a knowledge gap about that public figure, or requests current public-role "
+            "context. Never request web lookup for a bare name, a private acquaintance, a conversation "
+            "participant, or an attempt to identify someone from limited clues. "
+            "Never fact-check fictional plot events, "
             "opinions, predictions, personal claims, or facts that require live/current information. "
             "Set `knowledge_scope` to `stable`, `current`, `personal`, `uncertain`, or `fictional_context`; "
             "set `requires_current_information` true whenever verification would need the web or live data. "
@@ -425,7 +442,7 @@ class ProactiveDetector:
     def _minimum_confidence(self, intent: str) -> float:
         intent_thresholds = {
             "question": 0.80,
-            "definition": 0.84,
+            "definition": 0.80,
             "context": 0.90,
             "entity_context": 0.90,
             "knowledge_gap": 0.84,

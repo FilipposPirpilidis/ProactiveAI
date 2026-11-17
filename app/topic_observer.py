@@ -70,6 +70,13 @@ explaining how WorkManager and Doze affect an Android sync test,
 suggesting a payload/type comparison when an integer field fails but a boolean succeeds, or naming
 the relevant API mechanism when a team discusses automating file upload.
 
+Be especially attentive during AI, software, emerging-technology, science, and engineering
+discussions. Surface a concise definition or mechanism for a newly important acronym, framework,
+model concept, API, protocol, or specialist phrase before the listener loses the thread. When the
+conversation language is not English but the canonical technical term is English, keep that term
+exactly as spoken and write the explanation in the required output language. Do not explain a term
+the speakers have already defined, and do not turn a product or person's name alone into a card.
+
 Use one of these intents when triggered:
 - technical_context: stable background knowledge that makes the active discussion clearer
 - diagnostic_hypothesis: a plausible cause supported by conversation evidence

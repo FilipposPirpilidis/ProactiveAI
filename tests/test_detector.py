@@ -50,6 +50,28 @@ class TechnicalTermOllama:
         )
 
 
+async def test_conversate_prompt_prioritizes_ai_terms_and_protects_private_names() -> None:
+    ollama = TechnicalTermOllama()
+    detector = ProactiveDetector(
+        ollama,  # type: ignore[arg-type]
+        mode="conversate",
+        threshold=0.72,
+        cooldown_seconds=0,
+    )
+
+    result = await detector.detect_conversation(
+        "session-ai-terms",
+        "Μιλάμε για agentic workflow και vector embeddings.",
+        "Χρησιμοποιούμε RAG στο agentic workflow.",
+        language="el",
+    )
+
+    assert result.should_trigger is True
+    assert "emerging-technology" in ollama.last_prompt
+    assert "preserve that English term exactly" in ollama.last_prompt
+    assert "Never request web lookup for a bare name" in ollama.last_prompt
+
+
 class EntityRoleOllama:
     def __init__(self) -> None:
         self.last_prompt = ""
@@ -263,6 +285,30 @@ async def test_conversate_rejects_a_current_information_knowledge_gap() -> None:
 
     assert result.should_trigger is False
     assert result.reason == "requires_current_or_uncertain_information"
+
+
+async def test_conversate_routes_current_information_when_web_lane_is_allowed() -> None:
+    ollama = StructuredDetectionOllama(
+        '{"should_trigger":true,"confidence":0.93,'
+        '"reason":"explicit current knowledge gap","intent":"knowledge_gap",'
+        '"insight":null,"people":[],"answer_verification":false,'
+        '"subject":"current traffic in Patra","source_text":"I don\'t know the traffic",'
+        '"knowledge_scope":"current","requires_current_information":true,'
+        '"discourse_mode":"conversation"}'
+    )
+    detector = ProactiveDetector(ollama, mode="conversate")  # type: ignore[arg-type]
+
+    result = await detector.detect_conversation(
+        "session-1",
+        "I don't know what traffic is like in Patra now.",
+        "I don't know what traffic is like in Patra now.",
+        language="en",
+        allow_current_information=True,
+    )
+
+    assert result.should_trigger is True
+    assert result.requires_current_information is True
+    assert result.knowledge_scope == "current"
 
 
 async def test_detection_can_defer_cooldown_commit_for_a_partial() -> None:
