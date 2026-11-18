@@ -283,3 +283,21 @@ def test_scientific_or_systems_laws_remain_on_the_stable_fast_path() -> None:
     )
 
     assert TopicObserver._requires_sensitive_grounding(detection) is False
+
+
+def test_geopolitical_claims_are_forced_through_web_grounding() -> None:
+    from app.models import Detection
+
+    detection = Detection(
+        should_trigger=True,
+        confidence=0.75,
+        intent="fact_check",
+        reason="bridge damage claim",
+        insight="Η γέφυρα υπέστη ζημιές αλλά δεν κατέρρευσε.",
+        subject="γέφυρα του Κερτς",
+        topic="εμπλοκή δυτικών δυνάμεων στην Ουκρανία",
+        angle="ζημιές έναντι κατάρρευσης",
+        source_text="ο βομβαρδισμός έριξε τη γέφυρα του Κερτς",
+    )
+
+    assert TopicObserver._requires_sensitive_grounding(detection) is True

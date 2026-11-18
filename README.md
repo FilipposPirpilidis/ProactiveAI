@@ -1024,7 +1024,7 @@ as untrusted evidence, not as instructions.
 | `WEB_SEARCH_TIMEOUT_SECONDS` | `4` | Hard timeout for the search request |
 | `WEB_SEARCH_MAX_RESULTS` | `3` | Maximum grounding results per query |
 | `WEB_SEARCH_CACHE_TTL_SECONDS` | `600` | In-memory cache lifetime for equivalent searches |
-| `WEB_SEARCH_MIN_CONFIDENCE` | `0.80` | Minimum detector confidence before current information can invoke search |
+| `WEB_SEARCH_MIN_CONFIDENCE` | `0.70` | Minimum candidate confidence before current public information can invoke evidence-grounded search |
 | `AUTH_USERNAME` | `homebuddy` | Username accepted by the signin endpoint |
 | `AUTH_PASSWORD` | `123456` | Password accepted by the signin endpoint; change before deployment |
 | `AUTH_STATIC_TOKEN` | empty | Optional non-expiring pre-shared bearer token for clients that skip sign-in |

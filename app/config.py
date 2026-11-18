@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     web_search_timeout_seconds: float = Field(default=4.0, ge=0.5, le=30)
     web_search_max_results: int = Field(default=3, ge=1, le=10)
     web_search_cache_ttl_seconds: int = Field(default=600, ge=0, le=86_400)
-    web_search_min_confidence: float = Field(default=0.80, ge=0, le=1)
+    web_search_min_confidence: float = Field(default=0.70, ge=0, le=1)
 
     database_path: str = "/data/homebuddy.db"
     transcript_window_seconds: int = 180

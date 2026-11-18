@@ -132,6 +132,31 @@ async def test_public_person_questions_are_web_candidates_but_private_names_are_
     assert "Never route a bare name" in ollama.last_prompt
 
 
+async def test_current_public_question_falls_back_to_web_when_model_misses_it() -> None:
+    observer = QuestionObserver(  # type: ignore[arg-type]
+        ResponseOllama(
+            '{"should_trigger":false,"confidence":0.9,'
+            '"reason":"question_not_identified","intent":"none","insight":null,'
+            '"people":[],"answer_verification":false,"answer_status":"none",'
+            '"question_text":null,"human_answer":null,"subject":null,"topic":null,'
+            '"angle":"none","source_text":null,"knowledge_scope":"stable",'
+            '"requires_current_information":false,"discourse_mode":"conversation"}'
+        )
+    )
+
+    result = await observer.assess(
+        ("Εμείς τι έχουμε στείλει στην Ουκρανία από πλευράς στρατού;",),
+        language="el",
+        policy="always",
+    )
+
+    assert result.reason == "current_public_question_requires_web"
+    assert result.question_text == "Εμείς τι έχουμε στείλει στην Ουκρανία από πλευράς στρατού;"
+    assert result.requires_current_information is True
+    assert result.knowledge_scope == "current"
+    assert QuestionObserver.is_question_candidate(result.question_text, "el")
+
+
 def test_question_observer_owns_only_the_question_not_the_following_answer() -> None:
     assert QuestionObserver.is_question_candidate(
         "Ποια είναι η πρωτεύουσα της Αυστραλίας",

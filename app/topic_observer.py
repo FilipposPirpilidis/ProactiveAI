@@ -39,6 +39,7 @@ class TopicObserver:
         "ministry",
         "nautical mile",
         "national security council",
+        "nato",
         "parliament",
         "president",
         "regulation",
@@ -46,6 +47,9 @@ class TopicObserver:
         "statute",
         "treaty",
         "unclos",
+        "ukraine",
+        "russia",
+        "kerch",
         "αοζ",
         "άρθρ",
         "βουλή",
@@ -56,13 +60,18 @@ class TopicObserver:
         "κυβέρνη",
         "κυσεα",
         "μνημόνιο",
+        "νατο",
         "ναυτικ",
         "νόμ",
         "πρόεδρ",
+        "ρωσι",
         "συμβούλιο εθνικής ασφαλείας",
         "συνθήκ",
         "τουρκολιβυκ",
+        "ουκραν",
         "υπουργ",
+        "γέφυρα του κερτς",
+        "γεφυρα του κερτς",
     )
 
     def __init__(
@@ -183,7 +192,8 @@ the final card will be written as a possibility, not a fact. For stable platform
 current facts. If a useful public or historical claim needs live web data, set
 `requires_current_information` true, keep `should_trigger` true, and set `insight` to null so the
 web-grounding lane can verify it. Do not route private claims, speculation, opinions, or predictions
-to search. Exact legal, treaty, regulatory, geopolitical, government, public-institution,
+to search. Exact legal, treaty, regulatory, geopolitical, armed-conflict, military-assistance,
+government, public-institution,
 office-holder, election, historical-date, membership, jurisdiction, percentage, and territorial
 claims also require web grounding, even when they seem stable. A plain definition can remain on the
 fast stable path only when it contains no disputed application, exact article/date, office status,

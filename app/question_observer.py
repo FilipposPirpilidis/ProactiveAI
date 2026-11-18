@@ -22,6 +22,38 @@ class QuestionObserver:
             "is it possible", "would it be possible",
         ),
     }
+    _current_public_question_phrases = (
+        "εχεις πληροφοριες",
+        "τι εχουμε στειλει",
+        "τι εχει στειλει",
+        "τι ανακοινωσε",
+        "τι αποφασισε",
+        "θελω να ρωτησω",
+        "what have we sent",
+        "what has been sent",
+        "what did the government",
+        "what has the government",
+        "what did the country",
+        "what has the country",
+        "what was announced",
+    )
+    _current_public_markers = (
+        "government",
+        "military",
+        "ministry",
+        "nato",
+        "russia",
+        "ukraine",
+        "weapon",
+        "ελλαδ",
+        "κυβερνη",
+        "νατο",
+        "οπλ",
+        "ουκραν",
+        "ρωσι",
+        "στρατ",
+        "υπουργ",
+    )
 
     def __init__(
         self,
@@ -38,6 +70,8 @@ class QuestionObserver:
     @classmethod
     def is_question_candidate(cls, text: str, language: str | None = None) -> bool:
         normalized = cls._normalize(text)
+        if cls._current_public_question((text,)):
+            return True
         code = language.casefold().split("-", 1)[0] if language else ""
         starts = cls._question_starts.get(code, ())
         if any(normalized == start or normalized.startswith(start + " ") for start in starts):
@@ -132,6 +166,24 @@ Return JSON only with exactly this shape:
             )
             detection = Detection.model_validate(json.loads(raw))
             if not detection.question_text:
+                current_question = self._current_public_question(turns)
+                if current_question:
+                    return Detection(
+                        should_trigger=False,
+                        confidence=0.85,
+                        reason="current_public_question_requires_web",
+                        intent="question",
+                        insight=None,
+                        answer_status="unverifiable",
+                        question_text=current_question,
+                        subject=current_question,
+                        topic="current public information",
+                        angle="direct_answer",
+                        source_text=current_question,
+                        knowledge_scope="current",
+                        requires_current_information=True,
+                        discourse_mode="conversation",
+                    )
                 detection.should_trigger = False
                 detection.reason = "question_not_identified"
             if detection.answer_status == "unverifiable":
@@ -180,6 +232,25 @@ Return JSON only with exactly this shape:
             character for character in normalized if not unicodedata.combining(character)
         )
         return " ".join(re.findall(r"[\w]+", normalized, flags=re.UNICODE))
+
+    @classmethod
+    def _current_public_question(cls, turns: tuple[str, ...]) -> str | None:
+        for turn in reversed(turns):
+            spoken = re.sub(
+                r"^\s*(?:(?:speaker\s+\d+)|(?:owner)|(?:unknown))\s*:\s*",
+                "",
+                turn,
+                flags=re.IGNORECASE,
+            ).strip()
+            normalized = cls._normalize(spoken)
+            asks = any(
+                phrase in normalized
+                for phrase in cls._current_public_question_phrases
+            )
+            public = any(marker in normalized for marker in cls._current_public_markers)
+            if asks and public:
+                return spoken
+        return None
 
     @staticmethod
     def _lines(values: tuple[str, ...]) -> str:
