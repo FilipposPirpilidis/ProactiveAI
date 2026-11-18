@@ -40,6 +40,8 @@ class InsightFreshnessValidator:
                 "implementation_option",
                 "architecture_guidance",
                 "tradeoff",
+                "concept_link",
+                "technical_qualification",
             }
             and detection.knowledge_scope in {"current", "uncertain"}
             and not detection.web_grounded

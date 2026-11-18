@@ -83,6 +83,7 @@ class ServiceContainer:
             self.rules.technical_term_aliases,
             settings.insight_target_characters,
             settings.insight_max_characters,
+            settings.topic_observer_max_candidates,
         )
         self.question_observer = QuestionObserver(
             self.trigger_ollama,
@@ -565,7 +566,7 @@ class TopicInsightWorker:
                 limit=8,
             )
         )
-        detection = await self.services.topic_observer.detect(
+        detections = await self.services.topic_observer.detect_many(
             conversation,
             language=transcript.language,
             shown_insights=shown,
@@ -574,134 +575,168 @@ class TopicInsightWorker:
             ),
         )
         logger.info(
-            "Topic evaluated session=%s event=%s revision=%d triggered=%s "
-            "intent=%s confidence=%.2f "
-            "topic=%s subject=%s angle=%s scope=%s reason=%s",
+            "Topic evaluated session=%s event=%s revision=%d candidates=%d",
             self.session_id,
             transcript.event_id,
             revision,
-            detection.should_trigger,
-            detection.intent,
-            detection.confidence,
-            detection.topic,
-            detection.subject,
-            detection.angle,
-            detection.knowledge_scope,
-            detection.reason,
+            len(detections),
         )
-        minimum_confidence = self.minimum_confidence(
-            detection.intent,
-            self.services.settings.topic_observer_min_confidence,
-        )
-        if detection.should_trigger and detection.confidence < minimum_confidence:
+        for position, detection in enumerate(detections, start=1):
             logger.info(
-                "Topic insight discarded session=%s event=%s "
-                "reason=below_confidence_threshold intent=%s "
-                "confidence=%.2f threshold=%.2f",
+                "Topic candidate session=%s event=%s rank=%d intent=%s "
+                "confidence=%.2f topic=%s subject=%s angle=%s scope=%s reason=%s",
                 self.session_id,
                 transcript.event_id,
+                position,
                 detection.intent,
                 detection.confidence,
-                minimum_confidence,
-            )
-        if (
-            not detection.should_trigger
-            or detection.confidence
-            < minimum_confidence
-            or detection.requires_current_information
-            or self.services.detector.subject_angle_was_explained(
-                self.session_id,
+                detection.topic,
                 detection.subject,
                 detection.angle,
+                detection.knowledge_scope,
+                detection.reason,
             )
-        ):
-            return
-
-        # The observer returns the completed card in the same call that selects
-        # it, removing a second cloud round trip from the live topic lane.
-        if not detection.insight:
-            logger.info(
-                "Topic insight discarded session=%s event=%s reason=missing_card_text",
-                self.session_id,
-                transcript.event_id,
+            web_candidate = bool(
+                detection.requires_current_information
+                and self.services.web_search.available
             )
-            return
-        insight = Insight(
-            session_id=self.session_id,
-            text=detection.insight,
-            intent=detection.intent,
-            confidence=detection.confidence,
-        )
-        insight.text = sanitize_insight_text(
-            insight.text,
-            transcript.language,
-            self.services.settings.insight_max_characters,
-        )
-
-        async with self.insight_lock:
-            current = self._latest
-            source_is_current = bool(
-                current
-                and self._source_supported(
-                    detection.source_text or "",
-                    current[2],
+            minimum_confidence = (
+                self.services.settings.web_search_min_confidence
+                if web_candidate
+                else self.minimum_confidence(
+                    detection.intent,
+                    self.services.settings.topic_observer_min_confidence,
                 )
             )
-            repeated_angle = self.services.detector.subject_angle_was_explained(
-                self.session_id,
-                detection.subject,
-                detection.angle,
-            )
-            freshness = self.services.freshness.validate(
-                insight,
-                detection,
-                elapsed_seconds=(
-                    asyncio.get_running_loop().time() - evaluation_started
-                ),
-                max_age_seconds=(
-                    self.services.settings.topic_observer_max_age_seconds
-                ),
-                source_is_current=source_is_current,
-                repeated=(
-                    repeated_angle
-                    or self.services.detector.is_repeated_insight(
-                        self.session_id,
-                        insight.text,
-                    )
-                ),
-            )
-            if not freshness.accepted:
+            if detection.confidence < minimum_confidence:
                 logger.info(
-                    "Topic insight discarded session=%s event=%s reason=%s",
+                    "Topic insight discarded session=%s event=%s "
+                    "reason=below_confidence_threshold intent=%s "
+                    "confidence=%.2f threshold=%.2f",
                     self.session_id,
                     transcript.event_id,
-                    freshness.reason,
+                    detection.intent,
+                    detection.confidence,
+                    minimum_confidence,
                 )
-                return
-
-            await self.services.memory.store_insight(insight)
-            self.services.detector.record_insight(self.session_id, insight.text)
-            self.services.detector.record_explained_subject(
+                continue
+            if detection.requires_current_information and not web_candidate:
+                logger.info(
+                    "Topic insight discarded session=%s event=%s "
+                    "reason=current_information_unavailable",
+                    self.session_id,
+                    transcript.event_id,
+                )
+                continue
+            if self.services.detector.subject_angle_was_explained(
                 self.session_id,
                 detection.subject,
                 detection.angle,
+            ):
+                continue
+
+            if web_candidate:
+                query = " — ".join(
+                    part
+                    for part in (detection.subject, detection.source_text)
+                    if part
+                )
+                insight = await _generate_web_grounded_insight(
+                    self.services,
+                    self.session_id,
+                    detection,
+                    query,
+                    transcript.language,
+                )
+                if insight is None:
+                    continue
+            elif detection.insight:
+                # Stable topic candidates already contain the completed card,
+                # keeping this lane to one cloud round trip.
+                insight = Insight(
+                    session_id=self.session_id,
+                    text=detection.insight,
+                    intent=detection.intent,
+                    confidence=detection.confidence,
+                )
+            else:
+                continue
+            insight.text = sanitize_insight_text(
+                insight.text,
+                transcript.language,
+                self.services.settings.insight_max_characters,
             )
-            logger.info(
-                "Topic insight generated session=%s event=%s insight=%s",
-                self.session_id,
-                transcript.event_id,
-                insight.id,
-            )
-            await _deliver_insight(
-                self.websocket,
-                self.send_lock,
-                self.services.memory,
-                insight,
-                event_id=transcript.event_id,
-                # Keep the existing client protocol enum compatible. The
-                # server log identifies this as topic-observer output.
-                source="final",
-            )
+
+            accepted = False
+            async with self.insight_lock:
+                current = self._latest
+                source_is_current = bool(
+                    current
+                    and self._source_supported(
+                        detection.source_text or "",
+                        current[2],
+                    )
+                )
+                repeated_angle = self.services.detector.subject_angle_was_explained(
+                    self.session_id,
+                    detection.subject,
+                    detection.angle,
+                )
+                freshness = self.services.freshness.validate(
+                    insight,
+                    detection,
+                    elapsed_seconds=(
+                        asyncio.get_running_loop().time() - evaluation_started
+                    ),
+                    max_age_seconds=(
+                        self.services.settings.topic_observer_max_age_seconds
+                    ),
+                    source_is_current=source_is_current,
+                    repeated=(
+                        repeated_angle
+                        or self.services.detector.is_repeated_insight(
+                            self.session_id,
+                            insight.text,
+                        )
+                    ),
+                )
+                if not freshness.accepted:
+                    logger.info(
+                        "Topic insight discarded session=%s event=%s reason=%s",
+                        self.session_id,
+                        transcript.event_id,
+                        freshness.reason,
+                    )
+                    continue
+
+                await self.services.memory.store_insight(insight)
+                self.services.detector.record_insight(self.session_id, insight.text)
+                self.services.detector.record_explained_subject(
+                    self.session_id,
+                    detection.subject,
+                    detection.angle,
+                )
+                logger.info(
+                    "Topic insight generated session=%s event=%s rank=%d insight=%s",
+                    self.session_id,
+                    transcript.event_id,
+                    position,
+                    insight.id,
+                )
+                await _deliver_insight(
+                    self.websocket,
+                    self.send_lock,
+                    self.services.memory,
+                    insight,
+                    event_id=transcript.event_id,
+                    source="final",
+                )
+                accepted = True
+            if accepted:
+                if position < len(detections):
+                    await asyncio.sleep(
+                        self.services.settings.topic_observer_card_spacing_seconds
+                    )
 
     @staticmethod
     def minimum_confidence(intent: str, configured_minimum: float) -> float:
@@ -713,6 +748,8 @@ class TopicInsightWorker:
             "architecture_guidance": 0.72,
             "tradeoff": 0.75,
             "mechanism": 0.70,
+            "concept_link": 0.82,
+            "technical_qualification": 0.85,
             "platform_difference": 0.80,
             "troubleshooting_step": 0.80,
             "risk_or_constraint": 0.85,
@@ -1291,6 +1328,12 @@ async def websocket_endpoint(
             ),
             "topic_observer_debounce_ms": (
                 services.settings.topic_observer_debounce_ms
+            ),
+            "topic_observer_max_candidates": (
+                services.settings.topic_observer_max_candidates
+            ),
+            "topic_observer_card_spacing_seconds": (
+                services.settings.topic_observer_card_spacing_seconds
             ),
             "profile_detection": False,
             "available_profiles": ["general"],

@@ -1,0 +1,13 @@
+PARTIAL|Speaker 1: An effective controller has to be at least as capable and varied as the system it is trying to control.
+FINAL|Speaker 1: An effective controller has to be at least as capable and varied as the system it is trying to control.
+WAIT|3
+PARTIAL|Speaker 2: One proposed approach is to use AI systems to supervise other AI systems as capabilities scale.
+FINAL|Speaker 2: One proposed approach is to use AI systems to supervise other AI systems as capabilities scale.
+WAIT|3
+PARTIAL|Speaker 1: If software verifies a formal proof, we still need to know what verifies the verifier and how large the trusted base is.
+FINAL|Speaker 1: If software verifies a formal proof, we still need to know what verifies the verifier and how large the trusted base is.
+WAIT|3
+PARTIAL|Speaker 2: Another proposal is to isolate the model and strictly limit its communication channels and tools.
+FINAL|Speaker 2: Another proposal is to isolate the model and strictly limit its communication channels and tools.
+WAIT|20
+EXPECT_INSIGHT

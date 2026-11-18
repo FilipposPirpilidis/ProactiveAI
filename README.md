@@ -523,8 +523,12 @@ turns to accumulate, then considers the active topic rather than only the newest
 This lane can produce technical context, a qualified diagnostic hypothesis, a concrete
 troubleshooting check, a platform distinction, an implementation option, a material
 constraint, an architecture decision rule, a meaningful tradeoff, a mechanism explanation,
-or a decision/action clarification. Architecture cards may add a missing qualification even
-when a speaker's answer is broadly correct; they must not merely repeat the conversation.
+a named concept link, a technical qualification, or a decision/action clarification. One
+evaluation may rank several distinct supported cards. Accepted cards are spaced rather than
+dumped together, and each one is rechecked for freshness and duplication before delivery.
+Current public or historical claims are eligible only through the optional web-grounding lane.
+Architecture cards may add a missing qualification even when a speaker's answer is broadly
+correct; they must not merely repeat the conversation.
 For client compatibility, topic cards retain
 the existing `source: "final"` value and may arrive after another transcript event, as long as
 their supporting evidence remains in the active rolling context. Server logs identify them as
@@ -923,6 +927,16 @@ docker compose --profile simulator run --rm \
   simulator
 ```
 
+The interview-style AI-safety regression exercises implicit concept linking, including requisite
+variety, scalable oversight, trusted proof verification, and AI containment:
+
+```bash
+docker compose --profile simulator run --rm \
+  -e SIMULATOR_TEXT_FILE=/input/official-conversate-ai-risk.txt \
+  -e SIMULATOR_LANGUAGE=el \
+  simulator
+```
+
 The architecture-decision regression checks that a REST-versus-WebSocket discussion receives a
 useful interaction-pattern rule, including the one-way streaming option between ordinary REST and
 continuous bidirectional WebSockets:
@@ -1029,6 +1043,8 @@ as untrusted evidence, not as instructions.
 | `TOPIC_OBSERVER_MIN_CONFIDENCE` | `0.70` | Base threshold for safe explanation candidates; riskier topic intents retain higher code-enforced floors |
 | `TOPIC_OBSERVER_MAX_AGE_SECONDS` | `90` | Maximum generation age while its source remains in the active topic |
 | `TOPIC_OBSERVER_CONTEXT_ITEMS` | `24` | Maximum finalized utterances supplied to the topic observer |
+| `TOPIC_OBSERVER_MAX_CANDIDATES` | `3` | Maximum ranked, distinct cards proposed from one active-topic evaluation |
+| `TOPIC_OBSERVER_CARD_SPACING_SECONDS` | `8` | Minimum spacing between accepted cards from the same ranked batch |
 | `QUESTION_OBSERVER_ENABLED` | `true` | Enable finalized question/answer tracking in `conversate` mode |
 | `QUESTION_INSIGHT_POLICY` | `always` | `always`, `unanswered_or_incorrect`, or `incorrect_only` |
 | `QUESTION_ANSWER_GRACE_SECONDS` | `0.25` | Small transcript-settling delay before answering; later human answers are evaluated independently |

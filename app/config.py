@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     topic_observer_min_confidence: float = Field(default=0.70, ge=0, le=1)
     topic_observer_max_age_seconds: float = Field(default=90.0, ge=5, le=600)
     topic_observer_context_items: int = Field(default=24, ge=3, le=100)
+    topic_observer_max_candidates: int = Field(default=3, ge=1, le=5)
+    topic_observer_card_spacing_seconds: float = Field(default=8.0, ge=0, le=60)
     question_observer_enabled: bool = True
     question_insight_policy: str = Field(
         default="always",

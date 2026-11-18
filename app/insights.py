@@ -52,11 +52,13 @@ relationship supported by the supplied conversation. Qualify inferred roles with
 `likely`, or equivalent wording in the output language; never invent an exact title or sensitive trait.
 For topic-observer intents (`technical_context`, `diagnostic_hypothesis`, `troubleshooting_step`,
 `platform_difference`, `implementation_option`, `architecture_guidance`, `tradeoff`, `mechanism`,
-`risk_or_constraint`, `conversation_recap`), begin
+`risk_or_constraint`, `conversation_recap`, `concept_link`, `technical_qualification`), begin
 with a short useful heading followed by ` — ` and then the explanation. Add a concrete implication
 or next check when supported. For `diagnostic_hypothesis`, explicitly use cautious language such as
 `may`, `could`, `possibly`, or its equivalent in the output language. Never present a hypothesis as
-the confirmed cause.
+the confirmed cause. For `concept_link`, name the established concept and explain why the speaker's
+description maps to it without overstating certainty. For `technical_qualification`, preserve the
+valid part of the claim and add only the material caveat or distinction.
 Do not speak as though a human-to-human subjective question was addressed to you. Do not present
 variable travel, weather, or health estimates as certain facts without reliable supplied data.
 Be factual, calm, and concise. Aim for about {self.target_characters} characters. This is a soft

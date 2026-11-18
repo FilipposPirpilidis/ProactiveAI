@@ -7,7 +7,7 @@ from app.rules import technical_term_candidates
 
 
 class TopicObserver:
-    """Find one high-value card from the currently active multi-turn topic."""
+    """Find ranked high-value cards from the currently active multi-turn topic."""
 
     ALLOWED_INTENTS = {
         "technical_context",
@@ -21,6 +21,8 @@ class TopicObserver:
         "risk_or_constraint",
         "conversation_recap",
         "definition",
+        "concept_link",
+        "technical_qualification",
         "fact_check",
     }
 
@@ -31,12 +33,14 @@ class TopicObserver:
         technical_term_aliases: dict[str, list[str]] | None = None,
         target_characters: int = 260,
         max_characters: int = 340,
+        max_candidates: int = 3,
     ) -> None:
         self.ollama = ollama
         self.rules_instructions = rules_instructions.strip()
         self.technical_term_aliases = technical_term_aliases or {}
         self.target_characters = target_characters
         self.max_characters = max_characters
+        self.max_candidates = max_candidates
 
     async def detect(
         self,
@@ -46,6 +50,28 @@ class TopicObserver:
         shown_insights: tuple[str, ...] = (),
         explained_angles: tuple[str, ...] = (),
     ) -> Detection:
+        candidates = await self.detect_many(
+            conversation,
+            language=language,
+            shown_insights=shown_insights,
+            explained_angles=explained_angles,
+        )
+        if candidates:
+            return candidates[0]
+        return Detection(
+            should_trigger=False,
+            confidence=1.0,
+            reason="no_topic_candidate",
+        )
+
+    async def detect_many(
+        self,
+        conversation: str,
+        *,
+        language: str | None = None,
+        shown_insights: tuple[str, ...] = (),
+        explained_angles: tuple[str, ...] = (),
+    ) -> tuple[Detection, ...]:
         alias_candidates = list(
             technical_term_candidates(
                 conversation,
@@ -54,9 +80,11 @@ class TopicObserver:
         )
         prompt = f"""You are the topic observer for smart glasses following a live conversation.
 Unlike an immediate utterance detector, evaluate the ACTIVE TOPIC across the complete recent
-conversation below. Select at most ONE card: the most useful new technical fact, explanation,
-diagnostic hypothesis, troubleshooting step, platform distinction, implementation option,
-material constraint, or concise decision/action clarification that would help the wearer now.
+conversation below. Return up to {self.max_candidates} DISTINCT ranked card candidates: useful
+technical facts, explanations, named concepts, qualifications, diagnostic hypotheses,
+troubleshooting steps, platform distinctions, implementation options, material constraints, or
+concise decision/action clarifications that would help the wearer now. Rank the highest-value and
+best-supported candidate first. Do not return two candidates that make substantially the same point.
 
 Return the COMPLETE user-visible card in `insight` in the required output language. Do not return
 an outline or instructions for another model. Aim for about {self.target_characters} characters and
@@ -92,7 +120,19 @@ Use one of these intents when triggered:
 - risk_or_constraint: a material limitation that changes the plan or test
 - conversation_recap: a useful clarification of an agreed action or decision, never a generic summary
 - definition: an unexplained specialist term or acronym
+- concept_link: name an established law, principle, method, architecture, research result, or
+  recognized concept that is not necessarily spoken by name but is unambiguously described
+- technical_qualification: add a material caveat or established technical distinction that corrects
+  an oversimplification without accusing the speaker of being entirely wrong
 - fact_check: a material false stable claim, only with very high confidence
+
+Concept linking is especially valuable in interviews and lectures. For example, a description that
+an effective controller needs at least as much variety as the controlled system can be linked to
+Ashby's Law of Requisite Variety; AI supervising AI can be linked to scalable oversight or RLAIF;
+recursive proof checking can be qualified with the de Bruijn criterion or a small trusted computing
+base; and isolation/containment measures can be linked to the AI-box concept. Only make such links
+when the description is specific enough to identify the canonical concept confidently. Never invent
+a prestigious-sounding label for a generic statement.
 
 A fact check does not require a question. A material standalone assertion in the active conversation
 is eligible when it is objectively false and correctable from stable general knowledge. Correct only
@@ -101,8 +141,10 @@ the specific error; do not fact-check opinions, predictions, personal claims, or
 For a hypothesis, use `knowledge_scope` `uncertain` and make the uncertainty explicit in `reason`;
 the final card will be written as a possibility, not a fact. For stable platform/API behavior use
 `stable`. Never invent project-specific behavior, configuration, payloads, deadlines, ownership, or
-current facts. If the answer needs live web data, private documentation, or missing project details,
-set `requires_current_information` true and do not trigger. Ignore greetings, status-only updates,
+current facts. If a useful public or historical claim needs live web data, set
+`requires_current_information` true, keep `should_trigger` true, and set `insight` to null so the
+web-grounding lane can verify it. Do not route private claims, speculation, opinions, or predictions
+to search. If private documentation or missing project details are required, do not trigger. Ignore greetings, status-only updates,
 jokes, broken translation, incomplete fragments, and ordinary narration with no concrete addition.
 
 When speakers compare technical approaches or ask which architecture to use, trigger when a stable,
@@ -139,37 +181,33 @@ Recent active-topic conversation:
 {conversation}
 
 Return JSON only using exactly this structure:
-{{"should_trigger":bool,"confidence":0..1,"reason":"short", "intent":"technical_context|diagnostic_hypothesis|troubleshooting_step|platform_difference|implementation_option|architecture_guidance|tradeoff|mechanism|risk_or_constraint|conversation_recap|definition|fact_check|none","insight":"finished user-visible card or null","people":[],"answer_verification":false,"subject":"canonical subject or null","topic":"active topic or null","angle":"specific non-generic angle or null","source_text":"small exact supporting excerpt or null","knowledge_scope":"stable|current|personal|uncertain|fictional_context","requires_current_information":bool,"discourse_mode":"conversation|lecture|narration|fiction|unknown"}}"""
+{{"candidates":[{{"should_trigger":true,"confidence":0..1,"reason":"short", "intent":"technical_context|diagnostic_hypothesis|troubleshooting_step|platform_difference|implementation_option|architecture_guidance|tradeoff|mechanism|risk_or_constraint|conversation_recap|definition|concept_link|technical_qualification|fact_check","insight":"finished user-visible card or null for web candidates","people":[],"answer_verification":false,"subject":"canonical subject","topic":"active topic","angle":"specific non-generic angle","source_text":"small exact supporting excerpt","knowledge_scope":"stable|current|personal|uncertain|fictional_context","requires_current_information":bool,"discourse_mode":"conversation|lecture|narration|fiction|unknown"}}]}}"""
         try:
             raw = await self.ollama.chat(
                 [{"role": "user", "content": prompt}],
                 json_output=True,
             )
-            detection = Detection.model_validate(json.loads(raw))
-            if detection.should_trigger and detection.intent not in self.ALLOWED_INTENTS:
-                return Detection(
-                    should_trigger=False,
-                    confidence=detection.confidence,
-                    reason="unsupported_topic_intent",
-                )
-            if detection.should_trigger and (
-                not detection.subject
-                or not detection.angle
-                or not detection.source_text
-                or not detection.insight
-            ):
-                return Detection(
-                    should_trigger=False,
-                    confidence=detection.confidence,
-                    reason="incomplete_topic_evidence",
-                )
-            return detection
+            payload = json.loads(raw)
+            raw_candidates = payload.get("candidates") if isinstance(payload, dict) else None
+            if not isinstance(raw_candidates, list):
+                # Backward-compatible parsing also makes the rollout resilient
+                # when a model returns the former single-candidate shape.
+                raw_candidates = [payload]
+            accepted: list[Detection] = []
+            for candidate in raw_candidates[: self.max_candidates]:
+                detection = Detection.model_validate(candidate)
+                if not detection.should_trigger:
+                    continue
+                if detection.intent not in self.ALLOWED_INTENTS:
+                    continue
+                if not detection.subject or not detection.angle or not detection.source_text:
+                    continue
+                if not detection.insight and not detection.requires_current_information:
+                    continue
+                accepted.append(detection)
+            return tuple(accepted)
         except (OllamaError, ValueError, json.JSONDecodeError):
-            return Detection(
-                should_trigger=False,
-                confidence=0.5,
-                reason="topic_observer_unavailable",
-            )
+            return ()
 
     @staticmethod
     def _lines(values: tuple[str, ...]) -> str:
