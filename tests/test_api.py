@@ -135,7 +135,7 @@ def wait_for_analysis(client: TestClient, session_id: str, headers: dict[str, st
         response = client.post(f"/v1/sessions/{session_id}/analysis", headers=headers)
         if response.status_code == 200:
             return response
-        assert response.status_code in {404, 409}
+        assert response.status_code == 202
         time.sleep(0.01)
     raise AssertionError("session analysis did not become ready")
 
@@ -766,7 +766,7 @@ def test_static_token_protects_http_and_websocket_without_signin(
     get_settings.cache_clear()
 
 
-def test_disconnected_session_analysis_uses_transcripts_and_displayed_insights(
+def test_requested_session_analysis_uses_transcripts_and_is_consumed_once(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "analysis.db"))
@@ -799,13 +799,15 @@ def test_disconnected_session_analysis_uses_transcripts_and_displayed_insights(
             assert socket.receive_json()["type"] == "ack"
             assert socket.receive_json()["type"] == "insight"
 
-            active_response = client.post(
+            socket.close()
+            assert analyzer.transcripts == []
+            started = client.post(
                 "/v1/sessions/meeting-1/analysis",
                 headers=headers,
-                json={"output_language": "en"},
             )
-            assert active_response.status_code == 404
-            socket.close()
+            assert started.status_code == 202
+            assert started.headers["retry-after"] == "2"
+            assert started.json()["status"] == "processing"
             response = wait_for_analysis(client, "meeting-1", headers)
 
         assert response.status_code == 200
@@ -821,6 +823,14 @@ def test_disconnected_session_analysis_uses_transcripts_and_displayed_insights(
         assert analyzer.insights[0].text.startswith("Correction: Canberra")
         assert analyzer.output_language is None
 
+        # The successful response consumes the cached summary. A new request
+        # starts a fresh generation from the retained transcript.
+        requested_again = client.post(
+            "/v1/sessions/meeting-1/analysis",
+            headers=headers,
+        )
+        assert requested_again.status_code == 202
+
         assert client.post("/v1/sessions/meeting-1/analysis").status_code == 401
         assert (
             client.post(
@@ -832,7 +842,7 @@ def test_disconnected_session_analysis_uses_transcripts_and_displayed_insights(
     get_settings.cache_clear()
 
 
-def test_session_analysis_supports_partial_only_chat_after_disconnect(
+def test_requested_session_analysis_supports_partial_only_chat(
     tmp_path, monkeypatch
 ) -> None:
     monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "partial-analysis.db"))
@@ -873,11 +883,11 @@ def test_session_analysis_supports_partial_only_chat_after_disconnect(
             )
             assert socket.receive_json()["reason"] == "partial"
 
-            active_response = client.post(
-                "/v1/sessions/partial-meeting/analysis", headers=headers, json={}
-            )
-            assert active_response.status_code == 404
             socket.close()
+            started = client.post(
+                "/v1/sessions/partial-meeting/analysis", headers=headers
+            )
+            assert started.status_code == 202
             response = wait_for_analysis(client, "partial-meeting", headers)
 
         assert response.status_code == 200
@@ -921,20 +931,12 @@ def test_session_analysis_returns_try_later_while_background_job_runs(
             )
             assert socket.receive_json()["reason"] == "partial"
             socket.close()
-
-            deadline = time.monotonic() + 1
-            while True:
-                processing = client.post(
-                    "/v1/sessions/slow-analysis/analysis", headers=headers
-                )
-                if processing.status_code == 409:
-                    break
-                assert processing.status_code == 404
-                assert time.monotonic() < deadline
-                time.sleep(0.01)
-
+            processing = client.post(
+                "/v1/sessions/slow-analysis/analysis", headers=headers
+            )
+            assert processing.status_code == 202
             assert processing.headers["retry-after"] == "2"
-            assert "try again later" in processing.json()["detail"]
+            assert "Try again shortly" in processing.json()["message"]
             assert wait_for_analysis(client, "slow-analysis", headers).status_code == 200
 
     get_settings.cache_clear()

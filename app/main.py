@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, Query, WebSocket, WebSocketDisconnect, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
 from app.auth import AuthService
@@ -59,7 +60,11 @@ class ServiceContainer:
             settings.resolved_insight_model,
             settings.insight_ollama_timeout_seconds,
         )
-        self.memory = MemoryEngine(settings.database_path, settings.memory_result_limit)
+        self.memory = MemoryEngine(
+            settings.database_path,
+            settings.memory_result_limit,
+            settings.session_analysis_ttl_seconds,
+        )
         self.auth = AuthService(
             self.memory,
             settings.auth_username,
@@ -111,6 +116,30 @@ class ServiceContainer:
         )
         self.freshness = InsightFreshnessValidator(settings.insight_max_characters)
         self.analysis_tasks: dict[str, asyncio.Task[None]] = {}
+        self.analysis_cleanup_task: asyncio.Task[None] | None = None
+
+    def start_analysis_cleanup(self) -> None:
+        self.analysis_cleanup_task = asyncio.create_task(
+            self._analysis_cleanup_loop()
+        )
+
+    async def stop_analysis_cleanup(self) -> None:
+        if self.analysis_cleanup_task and not self.analysis_cleanup_task.done():
+            self.analysis_cleanup_task.cancel()
+            await asyncio.gather(
+                self.analysis_cleanup_task,
+                return_exceptions=True,
+            )
+
+    async def _analysis_cleanup_loop(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(3_600)
+                deleted = await self.memory.purge_expired_session_analyses()
+                if deleted:
+                    logger.info("Expired session analyses deleted count=%d", deleted)
+        except asyncio.CancelledError:
+            raise
 
     async def wait_for_analysis_tasks(self) -> None:
         if self.analysis_tasks:
@@ -126,8 +155,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     services = ServiceContainer(settings)
     await services.memory.initialize()
+    services.start_analysis_cleanup()
     app.state.services = services
     yield
+    await services.stop_analysis_cleanup()
     await services.wait_for_analysis_tasks()
     await services.memory.close()
     await services.trigger_ollama.close()
@@ -1205,42 +1236,71 @@ async def add_memory(request: MemoryRequest) -> dict[str, int]:
 
 @app.post(
     "/v1/sessions/{session_id}/analysis",
-    response_model=SessionAnalysisResponse,
+    response_model=None,
     dependencies=[Depends(require_http_token)],
+    responses={
+        200: {"model": SessionAnalysisResponse},
+        202: {"description": "Summary generation is in progress"},
+    },
 )
 async def analyze_session(
     session_id: str = Path(min_length=1, max_length=100),
-) -> SessionAnalysisResponse:
+) -> SessionAnalysisResponse | JSONResponse:
     services: ServiceContainer = app.state.services
-    stored = await services.memory.session_analysis(session_id)
+    stored = await services.memory.consume_session_analysis(session_id)
     if stored is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Session analysis is not available; disconnect the chat first",
+        scheduled = await _schedule_session_analysis(services, session_id)
+        if not scheduled:
+            raise HTTPException(
+                status_code=404,
+                detail="No transcript is available for this session",
+            )
+        return _analysis_pending_response(
+            "Summary generation started. Try again shortly."
         )
-    analysis_status, analysis, error = stored
+    analysis_status, analysis, _error = stored
     if analysis_status == "processing":
-        raise HTTPException(
-            status_code=409,
-            detail="Session analysis is still being generated; try again later",
-            headers={"Retry-After": "2"},
+        return _analysis_pending_response(
+            "Summary generation is still in progress. Try again shortly."
         )
     if analysis_status == "failed":
-        raise HTTPException(
-            status_code=503,
-            detail=error or "Session analysis generation failed",
+        scheduled = await _schedule_session_analysis(services, session_id)
+        if not scheduled:
+            raise HTTPException(
+                status_code=404,
+                detail="No transcript is available for this session",
+            )
+        return _analysis_pending_response(
+            "The previous attempt failed. Summary generation restarted; try again shortly."
         )
     if analysis is None:
-        raise HTTPException(status_code=503, detail="Stored session analysis is invalid")
+        scheduled = await _schedule_session_analysis(services, session_id)
+        if not scheduled:
+            raise HTTPException(status_code=503, detail="Stored session analysis is invalid")
+        return _analysis_pending_response(
+            "Summary generation restarted. Try again shortly."
+        )
     return analysis
+
+
+def _analysis_pending_response(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        headers={"Retry-After": "2"},
+        content={
+            "status": "processing",
+            "message": message,
+            "retry_after_seconds": 2,
+        },
+    )
 
 
 async def _schedule_session_analysis(
     services: ServiceContainer, session_id: str
-) -> None:
+) -> bool:
     existing = services.analysis_tasks.get(session_id)
     if existing and not existing.done():
-        return
+        return True
 
     transcripts, total, truncated, included_partial = (
         await services.memory.transcript_snapshot(
@@ -1249,7 +1309,7 @@ async def _schedule_session_analysis(
         )
     )
     if not transcripts:
-        return
+        return False
 
     await services.memory.mark_analysis_processing(session_id)
     task = asyncio.create_task(
@@ -1269,6 +1329,7 @@ async def _schedule_session_analysis(
             services.analysis_tasks.pop(session_id, None)
 
     task.add_done_callback(remove_finished)
+    return True
 
 
 async def _generate_session_analysis(
@@ -1515,7 +1576,6 @@ async def websocket_endpoint(
         await final_worker.close()
         await topic_worker.close()
         await question_worker.close()
-        await _schedule_session_analysis(services, session_id)
 
 
 async def _handle_transcript(

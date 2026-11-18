@@ -1,7 +1,8 @@
+import asyncio
 import re
 import time
 import unicodedata
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -17,10 +18,17 @@ from app.models import (
 
 
 class MemoryEngine:
-    def __init__(self, database_path: str, result_limit: int = 5) -> None:
+    def __init__(
+        self,
+        database_path: str,
+        result_limit: int = 5,
+        session_analysis_ttl_seconds: int = 259_200,
+    ) -> None:
         self.database_path = database_path
         self.result_limit = result_limit
+        self.session_analysis_ttl_seconds = session_analysis_ttl_seconds
         self._db: aiosqlite.Connection | None = None
+        self._analysis_lock = asyncio.Lock()
         self._partial_cache: dict[str, TranscriptMessage] = {}
         self._partial_last_checkpoint: dict[str, float] = {}
 
@@ -78,10 +86,11 @@ class MemoryEngine:
         await self._ensure_insight_delivery_columns()
         await self._db.execute(
             "UPDATE session_analyses SET status='failed', payload=NULL, "
-            "error='Analysis generation was interrupted; reconnect and disconnect the chat to retry', "
+            "error='Analysis generation was interrupted; request the summary again to retry', "
             "updated_at=? WHERE status='processing'",
             (datetime.now(timezone.utc).isoformat(),),
         )
+        await self.purge_expired_session_analyses()
         await self._db.commit()
 
     async def _ensure_insight_delivery_columns(self) -> None:
@@ -295,6 +304,62 @@ class MemoryEngine:
         analysis = SessionAnalysisResponse.model_validate_json(payload) if payload else None
         error = str(row["error"]) if row["error"] is not None else None
         return str(row["status"]), analysis, error
+
+    async def consume_session_analysis(
+        self,
+        session_id: str,
+    ) -> tuple[str, SessionAnalysisResponse | None, str | None] | None:
+        """Return status and delete a ready summary as it is handed to the client."""
+        assert self._db
+        async with self._analysis_lock:
+            cursor = await self._db.execute(
+                "SELECT status, payload, error, updated_at "
+                "FROM session_analyses WHERE session_id=?",
+                (session_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return None
+            cutoff = datetime.now(timezone.utc) - timedelta(
+                seconds=self.session_analysis_ttl_seconds
+            )
+            updated_at = datetime.fromisoformat(str(row["updated_at"]))
+            if updated_at < cutoff:
+                await self._db.execute(
+                    "DELETE FROM session_analyses WHERE session_id=?",
+                    (session_id,),
+                )
+                await self._db.commit()
+                return None
+            payload = str(row["payload"]) if row["payload"] is not None else None
+            analysis = (
+                SessionAnalysisResponse.model_validate_json(payload)
+                if payload
+                else None
+            )
+            error = str(row["error"]) if row["error"] is not None else None
+            analysis_status = str(row["status"])
+            if analysis_status == "ready":
+                await self._db.execute(
+                    "DELETE FROM session_analyses WHERE session_id=?",
+                    (session_id,),
+                )
+                await self._db.commit()
+            return analysis_status, analysis, error
+
+    async def purge_expired_session_analyses(self) -> int:
+        """Delete generated or failed analyses that exceeded the retention window."""
+        assert self._db
+        cutoff = datetime.now(timezone.utc) - timedelta(
+            seconds=self.session_analysis_ttl_seconds
+        )
+        async with self._analysis_lock:
+            cursor = await self._db.execute(
+                "DELETE FROM session_analyses WHERE updated_at < ?",
+                (cutoff.isoformat(),),
+            )
+            await self._db.commit()
+            return max(0, int(cursor.rowcount))
 
     async def remember(self, session_id: str, kind: str, content: str) -> int:
         assert self._db

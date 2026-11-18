@@ -1,3 +1,5 @@
+from datetime import datetime, timedelta, timezone
+
 import aiosqlite
 
 from app.memory import MemoryEngine
@@ -216,6 +218,64 @@ async def test_session_analysis_is_persisted_across_restart(tmp_path) -> None:
         assert stored[1].summary == "A stored meeting summary."
     finally:
         await reopened.close()
+
+
+async def test_ready_session_analysis_is_consumed_once(tmp_path) -> None:
+    engine = MemoryEngine(str(tmp_path / "consumed-analysis.db"))
+    await engine.initialize()
+    try:
+        await engine.mark_analysis_processing("meeting-1")
+        await engine.store_session_analysis(
+            SessionAnalysisResponse(
+                session_id="meeting-1",
+                transcript_count=2,
+                analyzed_transcript_count=2,
+                truncated=False,
+                summary="A one-time meeting summary.",
+            )
+        )
+
+        consumed = await engine.consume_session_analysis("meeting-1")
+
+        assert consumed is not None
+        assert consumed[0] == "ready"
+        assert consumed[1] is not None
+        assert consumed[1].summary == "A one-time meeting summary."
+        assert await engine.consume_session_analysis("meeting-1") is None
+        assert await engine.session_analysis("meeting-1") is None
+    finally:
+        await engine.close()
+
+
+async def test_expired_session_analysis_is_deleted(tmp_path) -> None:
+    engine = MemoryEngine(
+        str(tmp_path / "expired-analysis.db"),
+        session_analysis_ttl_seconds=60,
+    )
+    await engine.initialize()
+    try:
+        await engine.mark_analysis_processing("meeting-1")
+        await engine.store_session_analysis(
+            SessionAnalysisResponse(
+                session_id="meeting-1",
+                transcript_count=1,
+                analyzed_transcript_count=1,
+                truncated=False,
+                summary="An expired meeting summary.",
+            )
+        )
+        assert engine._db is not None
+        expired_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        await engine._db.execute(
+            "UPDATE session_analyses SET updated_at=? WHERE session_id=?",
+            (expired_at, "meeting-1"),
+        )
+        await engine._db.commit()
+
+        assert await engine.consume_session_analysis("meeting-1") is None
+        assert await engine.session_analysis("meeting-1") is None
+    finally:
+        await engine.close()
 
 
 async def test_people_memory_groups_names_and_is_isolated_by_session(tmp_path) -> None:

@@ -693,17 +693,28 @@ rotated and the container is recreated.
 
 ## Summarize and audit a conversation session
 
-When a chat WebSocket disconnects, the server starts a background LLM analysis and stores the result
-in SQLite. An authenticated client can then retrieve the prepared result by `session_id` without
-waiting for a new LLM request:
+Session analysis is generated on demand. Ending a WebSocket conversation does not call the LLM.
+When the user asks for a summary, an authenticated client starts the job with the session's exact
+`session_id`:
 
 ```bash
 curl -X POST http://PI_ADDRESS:18743/v1/sessions/SESSION_ID/analysis \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 ```
 
-The analysis uses the conversation's dominant language because it is generated at disconnect time.
-The response contains:
+The first request normally returns `202 Accepted`:
+
+```json
+{
+  "status": "processing",
+  "message": "Summary generation started. Try again shortly.",
+  "retry_after_seconds": 2
+}
+```
+
+The response also includes `Retry-After: 2`. The client should show a short “preparing summary” state
+and poll the same endpoint after that delay. A request made while the job is still running returns the
+same `202` contract. The completed `200 OK` response contains:
 
 - a concise summary;
 - significant moments with their transcript `event_id` values;
@@ -744,18 +755,18 @@ Example response shape:
 }
 ```
 
-Generation begins only after the WebSocket disconnects and does not delay the disconnect itself. It
-includes all stored final transcripts and, when speech has not finalized, the newest assembled partial
-as a clearly marked provisional transcript. The server stores `processing`, `ready`, or `failed` state
-alongside the generated JSON in SQLite. While generation is running, the retrieval endpoint returns
-`409` with `Retry-After: 2` and `"Session analysis is still being generated; try again later"`. Retry
-after that delay. A session that has not disconnected or has no transcript/analysis returns `404`,
-invalid authentication returns `401`, and failed generation returns `503`. Check
-`included_partial_transcript` to tell whether provisional speech contributed to the analysis.
+Generation includes all stored final transcripts and, when speech has not finalized, the newest
+assembled partial as a clearly marked provisional transcript. Check `included_partial_transcript` to
+tell whether provisional speech contributed to the analysis. The analysis follows the conversation
+language while preserving proper names and technical terms.
 
-Because the completed response is stored, later requests—including requests after a server restart—
-return the same prepared analysis immediately and do not call Ollama again. Disconnecting another
-WebSocket using the same `session_id` regenerates and replaces that session's stored analysis.
+The server stores `processing`, `ready`, or `failed` state and the generated JSON in SQLite. A ready
+summary is retained for at most three days by default, including across server restarts. The first
+successful `200` delivery consumes and deletes that generated summary from the server. The client
+must therefore decode and retain the response locally if the user should be able to reopen it. A later
+request for the same session starts a fresh generation from the retained transcript. Failed attempts
+are also retried by the next request. A session with no stored transcript returns `404`, and invalid
+authentication returns `401`.
 
 The retrospective missed-insight list is an LLM audit, not a guarantee that every candidate should
 have interrupted the wearer in real time. The prompt compares candidates semantically against all
@@ -1064,6 +1075,7 @@ as untrusted evidence, not as instructions.
 | `TRANSCRIPT_MAX_ITEMS` | `40` | Rolling context item limit |
 | `MEMORY_RESULT_LIMIT` | `5` | Maximum retrieved memories |
 | `SESSION_ANALYSIS_MAX_CHARACTERS` | `60000` | Maximum transcript characters sent to one session analysis; newest records are retained and `truncated` reports reduced coverage |
+| `SESSION_ANALYSIS_TTL_SECONDS` | `259200` | Maximum time (three days by default) an undelivered generated summary remains in SQLite |
 | `DATABASE_PATH` | `/data/homebuddy.db` | SQLite database path |
 | `LOG_LEVEL` | `INFO` | Python log level |
 

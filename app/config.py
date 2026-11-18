@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     session_analysis_max_characters: int = Field(
         default=60_000, ge=5_000, le=1_000_000
     )
+    session_analysis_ttl_seconds: int = Field(
+        default=259_200, ge=60, le=2_592_000
+    )
 
     @property
     def resolved_trigger_base_url(self) -> str:
