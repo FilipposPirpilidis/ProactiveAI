@@ -815,16 +815,19 @@ Language policies:
 | Policy | Behavior |
 |---|---|
 | `session_locked` | Recommended. Lock to the first allowed finalized transcript language for the session. |
-| `fixed` | Always use `fallback_language`. |
+| `fixed` | Always use `fallback_language` when the client does not select a target language. |
 | `utterance` | Follow each allowed transcript language independently. |
 | `client` | Use the optional WebSocket `output_language` query value, otherwise the fallback. |
 
-Only entries in `allowed_languages` are accepted. With `[el, en]`, a mistaken ASR language such as
+An explicit `output_language` is the user's target language and overrides automatic, fixed,
+utterance, and session-lock inference for the lifetime of that WebSocket. This means an English
+conversation can consistently produce Greek cards with
+`/v1/ws?...&output_language=el`. If the client omits it, the configured policy behaves exactly as
+before. Only entries in `allowed_languages` are accepted. An explicitly requested unsupported
+language is rejected instead of silently falling back. With `[el, en]`, a mistaken ASR language such as
 `fr` cannot switch the response to French. Before the first reliable final transcript, an allowed
 partial language is used provisionally without locking the session; a missing or disallowed partial
-uses `fallback_language`. A client can explicitly request an allowed language by opening, for example,
-`/v1/ws?...&output_language=en`. Start a new `session_id` when beginning a conversation in another
-language under `session_locked`.
+uses `fallback_language`. Reconnect the WebSocket to change the selected target language.
 
 After editing the file, recreate the service so it reloads the rules:
 

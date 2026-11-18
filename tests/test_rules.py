@@ -55,7 +55,7 @@ def test_allowed_partial_language_is_provisional_until_first_final() -> None:
     assert resolver.resolve("el", is_final=False) == "en"
 
 
-def test_fixed_policy_always_uses_fallback_language() -> None:
+def test_explicit_user_language_overrides_fixed_policy() -> None:
     rules = ConversateRules(
         language_policy="fixed",
         fallback_language="el",
@@ -63,7 +63,32 @@ def test_fixed_policy_always_uses_fallback_language() -> None:
     )
     resolver = SessionLanguageResolver(rules, requested_language="en")
 
-    assert resolver.resolve("en", is_final=True) == "el"
+    assert resolver.resolve("el", is_final=True) == "en"
+    assert resolver.current == "en"
+    assert resolver.is_client_selected is True
+
+
+def test_explicit_user_language_overrides_utterance_policy() -> None:
+    rules = ConversateRules(
+        language_policy="utterance",
+        fallback_language="en",
+        allowed_languages=["el", "en"],
+    )
+    resolver = SessionLanguageResolver(rules, requested_language="el-GR")
+
+    assert resolver.resolve("en-US", is_final=False) == "el"
+    assert resolver.resolve("en-US", is_final=True) == "el"
+
+
+def test_unsupported_explicit_output_language_is_rejected() -> None:
+    rules = ConversateRules(
+        language_policy="session_locked",
+        fallback_language="el",
+        allowed_languages=["el", "en"],
+    )
+
+    with pytest.raises(ValueError, match="Unsupported output language"):
+        SessionLanguageResolver(rules, requested_language="fr")
 
 
 def test_fallback_must_be_allowed(tmp_path: Path) -> None:

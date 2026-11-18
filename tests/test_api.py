@@ -44,6 +44,21 @@ class FakeInsightEngine:
         )
 
 
+class LanguageRecordingInsightEngine(FakeInsightEngine):
+    def __init__(self) -> None:
+        self.language: str | None = None
+
+    async def generate(
+        self,
+        session_id: str,
+        *args: object,
+        language: str | None = None,
+        **kwargs: object,
+    ) -> Insight:
+        self.language = language or (str(args[-1]) if args else None)
+        return await super().generate(session_id, *args, **kwargs)
+
+
 class CombinedDetector:
     def record_trigger(self, session_id: str, text: str) -> None:
         pass
@@ -262,6 +277,7 @@ def test_websocket_transcript_to_insight(tmp_path, monkeypatch) -> None:
             assert ready["detector_mode"] == "heuristic"
             assert ready["profile_detection"] is False
             assert ready["available_profiles"] == ["general"]
+            assert ready["output_language_source"] == "automatic"
             socket.send_json(
                 {
                     "type": "transcript",
@@ -298,6 +314,44 @@ def test_websocket_transcript_to_insight(tmp_path, monkeypatch) -> None:
                 "insight_id": insight["insight_id"],
                 "status": "displayed",
             }
+
+    get_settings.cache_clear()
+
+
+def test_websocket_accepts_explicit_insight_target_language(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("DATABASE_PATH", str(tmp_path / "target-language.db"))
+    monkeypatch.setenv("DETECTOR_MODE", "heuristic")
+    configure_auth(monkeypatch)
+    get_settings.cache_clear()
+
+    with TestClient(app) as client:
+        token = sign_in(client)
+        insight_engine = LanguageRecordingInsightEngine()
+        app.state.services.insights = insight_engine
+        with client.websocket_connect(
+            "/v1/ws?client_id=glasses-1&session_id=language-target&output_language=el",
+            headers={"Authorization": f"Bearer {token}"},
+        ) as socket:
+            ready = socket.receive_json()
+
+            assert ready["output_language"] == "el"
+            assert ready["output_language_source"] == "client"
+            socket.send_json(
+                {
+                    "type": "transcript",
+                    "event_id": "english-source-greek-card",
+                    "text": "What is the capital of Australia?",
+                    "is_final": True,
+                    "speaker": "owner",
+                    "language": "en",
+                }
+            )
+            assert socket.receive_json()["type"] == "ack"
+            assert socket.receive_json()["type"] == "insight"
+            assert insight_engine.language == "el"
 
     get_settings.cache_clear()
 

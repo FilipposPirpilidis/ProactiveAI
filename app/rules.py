@@ -86,13 +86,31 @@ class SessionLanguageResolver:
     def __init__(self, rules: ConversateRules, requested_language: str | None = None) -> None:
         self.rules = rules
         requested = self._allowed(requested_language)
-        self._locked_language = requested
+        if requested_language is not None and requested is None:
+            raise ValueError(
+                f"Unsupported output language: {requested_language!r}; "
+                f"allowed: {', '.join(rules.allowed_languages)}"
+            )
+        self._requested_language = requested
+        self._locked_language: str | None = None
+
+    @property
+    def is_client_selected(self) -> bool:
+        return self._requested_language is not None
 
     @property
     def current(self) -> str:
-        return self._locked_language or self.rules.fallback_language
+        return (
+            self._requested_language
+            or self._locked_language
+            or self.rules.fallback_language
+        )
 
     def resolve(self, detected_language: str | None, *, is_final: bool) -> str:
+        # An explicit user choice is authoritative for generated cards. The
+        # detected ASR language remains relevant only in automatic mode.
+        if self._requested_language:
+            return self._requested_language
         candidate = self._allowed(detected_language)
         policy = self.rules.language_policy
         if policy == "fixed":

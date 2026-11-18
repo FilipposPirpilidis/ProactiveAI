@@ -1321,6 +1321,15 @@ async def websocket_endpoint(
         )
         return
 
+    try:
+        language_resolver = SessionLanguageResolver(services.rules, output_language)
+    except ValueError:
+        await websocket.close(
+            code=status.WS_1008_POLICY_VIOLATION,
+            reason="Unsupported output_language",
+        )
+        return
+
     await websocket.accept()
     send_lock = asyncio.Lock()
     insight_lock = asyncio.Lock()
@@ -1329,7 +1338,6 @@ async def websocket_endpoint(
         services.settings.transcript_window_seconds,
     )
     partial_assembler = PartialTranscriptAssembler()
-    language_resolver = SessionLanguageResolver(services.rules, output_language)
     for prior in await services.memory.recent_transcripts(
         session_id, services.settings.transcript_max_items
     ):
@@ -1349,6 +1357,9 @@ async def websocket_endpoint(
             "detector_mode": services.settings.detector_mode,
             "language_policy": services.rules.language_policy,
             "output_language": language_resolver.current,
+            "output_language_source": (
+                "client" if language_resolver.is_client_selected else "automatic"
+            ),
             "allowed_languages": services.rules.allowed_languages,
             "partial_insights": services.settings.detector_mode == "conversate",
             "partial_insight_debounce_ms": services.settings.partial_insight_debounce_ms,
