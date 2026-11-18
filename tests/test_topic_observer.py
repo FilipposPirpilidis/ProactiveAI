@@ -118,6 +118,30 @@ def test_topic_intents_use_risk_adjusted_confidence_floors() -> None:
     assert TopicInsightWorker.minimum_confidence("definition", 0.90) == 0.90
 
 
+def test_topic_delivery_prioritizes_stable_cards_before_web_candidates() -> None:
+    from app.main import TopicInsightWorker
+    from app.models import Detection
+
+    web = Detection(
+        should_trigger=True,
+        confidence=0.9,
+        intent="technical_qualification",
+        reason="needs verification",
+        requires_current_information=True,
+    )
+    stable = Detection(
+        should_trigger=True,
+        confidence=0.9,
+        intent="definition",
+        reason="stable definition",
+    )
+
+    ordered = TopicInsightWorker.delivery_order((web, stable))
+
+    assert ordered[0] == (2, stable)
+    assert ordered[1] == (1, web)
+
+
 async def test_topic_observer_prioritizes_mixed_language_ai_terms() -> None:
     ollama = RecordingOllama(
         '{"should_trigger":false,"confidence":0.8,"reason":"already explained",'
@@ -218,3 +242,44 @@ async def test_topic_observer_routes_current_public_claim_without_draft_card() -
     assert len(results) == 1
     assert results[0].requires_current_information is True
     assert results[0].insight is None
+
+
+async def test_topic_observer_forces_legal_claims_through_web_grounding() -> None:
+    ollama = RecordingOllama(
+        '{"candidates":[{"should_trigger":true,"confidence":0.94,'
+        '"reason":"specific treaty application",'
+        '"intent":"technical_context",'
+        '"insight":"UNCLOS Article 273 — This article requires cooperation before EEZ delimitation.",'
+        '"people":[],"answer_verification":false,"subject":"UNCLOS Article 273",'
+        '"topic":"law of the sea","angle":"cooperation before EEZ delimitation",'
+        '"source_text":"article 273 requires the states to cooperate",'
+        '"knowledge_scope":"stable","requires_current_information":false,'
+        '"discourse_mode":"conversation"}]}'
+    )
+    observer = TopicObserver(ollama)  # type: ignore[arg-type]
+
+    results = await observer.detect_many(
+        "Article 273 requires the states to cooperate before delimiting the EEZ."
+    )
+
+    assert len(results) == 1
+    assert results[0].requires_current_information is True
+    assert results[0].insight is None
+
+
+def test_scientific_or_systems_laws_remain_on_the_stable_fast_path() -> None:
+    from app.models import Detection
+
+    detection = Detection(
+        should_trigger=True,
+        confidence=0.94,
+        intent="concept_link",
+        reason="requisite variety described",
+        insight="Ashby’s Law — A controller needs enough response variety.",
+        subject="Ashby’s Law of Requisite Variety",
+        topic="AI control systems",
+        angle="controller variety",
+        source_text="the controller must match the system variety",
+    )
+
+    assert TopicObserver._requires_sensitive_grounding(detection) is False

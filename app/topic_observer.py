@@ -1,4 +1,5 @@
 import json
+import re
 
 from app.languages import language_instruction
 from app.models import Detection
@@ -25,6 +26,44 @@ class TopicObserver:
         "technical_qualification",
         "fact_check",
     }
+    SENSITIVE_GROUNDING_MARKERS = (
+        "aouz",
+        "casus belli",
+        "congress",
+        "council of ministers",
+        "election",
+        "government",
+        "international law",
+        "law of the sea",
+        "legislation",
+        "ministry",
+        "nautical mile",
+        "national security council",
+        "parliament",
+        "president",
+        "regulation",
+        "senate",
+        "statute",
+        "treaty",
+        "unclos",
+        "αοζ",
+        "άρθρ",
+        "βουλή",
+        "γαλάζια πατρίδα",
+        "γερουσί",
+        "διεθνές δίκαιο",
+        "εκλογ",
+        "κυβέρνη",
+        "κυσεα",
+        "μνημόνιο",
+        "ναυτικ",
+        "νόμ",
+        "πρόεδρ",
+        "συμβούλιο εθνικής ασφαλείας",
+        "συνθήκ",
+        "τουρκολιβυκ",
+        "υπουργ",
+    )
 
     def __init__(
         self,
@@ -144,7 +183,12 @@ the final card will be written as a possibility, not a fact. For stable platform
 current facts. If a useful public or historical claim needs live web data, set
 `requires_current_information` true, keep `should_trigger` true, and set `insight` to null so the
 web-grounding lane can verify it. Do not route private claims, speculation, opinions, or predictions
-to search. If private documentation or missing project details are required, do not trigger. Ignore greetings, status-only updates,
+to search. Exact legal, treaty, regulatory, geopolitical, government, public-institution,
+office-holder, election, historical-date, membership, jurisdiction, percentage, and territorial
+claims also require web grounding, even when they seem stable. A plain definition can remain on the
+fast stable path only when it contains no disputed application, exact article/date, office status,
+membership, or material numeric claim. If private documentation or missing project details are
+required, do not trigger. Ignore greetings, status-only updates,
 jokes, broken translation, incomplete fragments, and ordinary narration with no concrete addition.
 
 When speakers compare technical approaches or ask which architecture to use, trigger when a stable,
@@ -204,6 +248,9 @@ Return JSON only using exactly this structure:
                     continue
                 if not detection.insight and not detection.requires_current_information:
                     continue
+                if self._requires_sensitive_grounding(detection):
+                    detection.requires_current_information = True
+                    detection.insight = None
                 accepted.append(detection)
             return tuple(accepted)
         except (OllamaError, ValueError, json.JSONDecodeError):
@@ -212,3 +259,46 @@ Return JSON only using exactly this structure:
     @staticmethod
     def _lines(values: tuple[str, ...]) -> str:
         return "\n".join(f"- {value}" for value in values) or "None"
+
+    @classmethod
+    def _requires_sensitive_grounding(cls, detection: Detection) -> bool:
+        """Keep high-risk public claims out of the ungrounded fast path."""
+        text = " ".join(
+            value or ""
+            for value in (
+                detection.subject,
+                detection.topic,
+                detection.angle,
+                detection.source_text,
+                detection.insight,
+            )
+        ).casefold()
+        if any(marker in text for marker in cls.SENSITIVE_GROUNDING_MARKERS):
+            return True
+        if re.search(r"\b(?:article|legal|treaty|regulation)\b", text):
+            return True
+        if re.search(r"\blaws?\b", text) and any(
+            marker in text
+            for marker in (
+                "court",
+                "jurisdiction",
+                "statute",
+                "government",
+                "parliament",
+                "territorial",
+            )
+        ):
+            return True
+        public_claim = any(
+            marker in text
+            for marker in (
+                "public institution",
+                "territorial waters",
+                "government agency",
+                "κρατικό όργανο",
+                "δημόσιο όργανο",
+                "χωρικά ύδατα",
+            )
+        )
+        exact_number = bool(re.search(r"\b\d+(?:[.,]\d+)?\b|\d+%", text))
+        return public_claim and exact_number

@@ -525,8 +525,11 @@ troubleshooting check, a platform distinction, an implementation option, a mater
 constraint, an architecture decision rule, a meaningful tradeoff, a mechanism explanation,
 a named concept link, a technical qualification, or a decision/action clarification. One
 evaluation may rank several distinct supported cards. Accepted cards are spaced rather than
-dumped together, and each one is rechecked for freshness and duplication before delivery.
-Current public or historical claims are eligible only through the optional web-grounding lane.
+dumped together, and each one is rechecked for freshness and duplication before delivery. Stable
+cards are delivered before slower web-dependent cards even when the latter ranked first. Current
+public or historical claims—and exact legal, treaty, regulatory, political, institutional,
+territorial, office-holder, or material public-number claims—are eligible only through the optional
+web-grounding lane.
 Architecture cards may add a missing qualification even when a speaker's answer is broadly
 correct; they must not merely repeat the conversation.
 For client compatibility, topic cards retain
@@ -1037,14 +1040,14 @@ as untrusted evidence, not as instructions.
 | `PARTIAL_INSIGHT_MAX_AGE_SECONDS` | `8` | Discard a provisional card when generation finishes too late |
 | `FINAL_INSIGHT_MAX_AGE_SECONDS` | `30` | Discard a final card when generation finishes too late |
 | `TOPIC_OBSERVER_ENABLED` | `true` | Enable the finalized multi-turn topic-observer lane |
-| `TOPIC_OBSERVER_DEBOUNCE_MS` | `1500` | Wait briefly for a stable multi-turn span before topic evaluation |
-| `TOPIC_OBSERVER_INTERVAL_MS` | `3500` | Minimum start-to-start interval between topic evaluations |
+| `TOPIC_OBSERVER_DEBOUNCE_MS` | `800` | Wait briefly for a stable multi-turn span before topic evaluation |
+| `TOPIC_OBSERVER_INTERVAL_MS` | `2500` | Minimum start-to-start interval between topic evaluations |
 | `TOPIC_OBSERVER_MIN_WORDS` | `12` | Minimum active-topic context before evaluation |
 | `TOPIC_OBSERVER_MIN_CONFIDENCE` | `0.70` | Base threshold for safe explanation candidates; riskier topic intents retain higher code-enforced floors |
 | `TOPIC_OBSERVER_MAX_AGE_SECONDS` | `90` | Maximum generation age while its source remains in the active topic |
-| `TOPIC_OBSERVER_CONTEXT_ITEMS` | `24` | Maximum finalized utterances supplied to the topic observer |
+| `TOPIC_OBSERVER_CONTEXT_ITEMS` | `16` | Maximum finalized utterances supplied to the topic observer |
 | `TOPIC_OBSERVER_MAX_CANDIDATES` | `3` | Maximum ranked, distinct cards proposed from one active-topic evaluation |
-| `TOPIC_OBSERVER_CARD_SPACING_SECONDS` | `8` | Minimum spacing between accepted cards from the same ranked batch |
+| `TOPIC_OBSERVER_CARD_SPACING_SECONDS` | `4` | Minimum spacing between accepted cards from the same ranked batch |
 | `QUESTION_OBSERVER_ENABLED` | `true` | Enable finalized question/answer tracking in `conversate` mode |
 | `QUESTION_INSIGHT_POLICY` | `always` | `always`, `unanswered_or_incorrect`, or `incorrect_only` |
 | `QUESTION_ANSWER_GRACE_SECONDS` | `0.25` | Small transcript-settling delay before answering; later human answers are evaluated independently |

@@ -566,6 +566,7 @@ class TopicInsightWorker:
                 limit=8,
             )
         )
+        detection_started = asyncio.get_running_loop().time()
         detections = await self.services.topic_observer.detect_many(
             conversation,
             language=transcript.language,
@@ -575,19 +576,27 @@ class TopicInsightWorker:
             ),
         )
         logger.info(
-            "Topic evaluated session=%s event=%s revision=%d candidates=%d",
+            "Topic evaluated session=%s event=%s revision=%d candidates=%d "
+            "observer_elapsed_ms=%.0f total_elapsed_ms=%.0f",
             self.session_id,
             transcript.event_id,
             revision,
             len(detections),
+            (asyncio.get_running_loop().time() - detection_started) * 1_000,
+            (asyncio.get_running_loop().time() - evaluation_started) * 1_000,
         )
-        for position, detection in enumerate(detections, start=1):
+        ordered = self.delivery_order(detections)
+        for delivery_position, (original_rank, detection) in enumerate(
+            ordered,
+            start=1,
+        ):
             logger.info(
-                "Topic candidate session=%s event=%s rank=%d intent=%s "
+                "Topic candidate session=%s event=%s rank=%d delivery_order=%d intent=%s "
                 "confidence=%.2f topic=%s subject=%s angle=%s scope=%s reason=%s",
                 self.session_id,
                 transcript.event_id,
-                position,
+                original_rank,
+                delivery_position,
                 detection.intent,
                 detection.confidence,
                 detection.topic,
@@ -720,7 +729,7 @@ class TopicInsightWorker:
                     "Topic insight generated session=%s event=%s rank=%d insight=%s",
                     self.session_id,
                     transcript.event_id,
-                    position,
+                    original_rank,
                     insight.id,
                 )
                 await _deliver_insight(
@@ -733,10 +742,32 @@ class TopicInsightWorker:
                 )
                 accepted = True
             if accepted:
-                if position < len(detections):
+                logger.info(
+                    "Topic insight delivered session=%s event=%s rank=%d "
+                    "delivery_elapsed_ms=%.0f web_grounded=%s",
+                    self.session_id,
+                    transcript.event_id,
+                    original_rank,
+                    (asyncio.get_running_loop().time() - evaluation_started) * 1_000,
+                    detection.web_grounded,
+                )
+                if delivery_position < len(ordered):
                     await asyncio.sleep(
                         self.services.settings.topic_observer_card_spacing_seconds
                     )
+
+    @staticmethod
+    def delivery_order(
+        detections: tuple[Detection, ...],
+    ) -> tuple[tuple[int, Detection], ...]:
+        """Deliver stable cards before slower web work, preserving rank within each lane."""
+        ranked = tuple(enumerate(detections, start=1))
+        return tuple(
+            sorted(
+                ranked,
+                key=lambda item: item[1].requires_current_information,
+            )
+        )
 
     @staticmethod
     def minimum_confidence(intent: str, configured_minimum: float) -> float:
@@ -787,11 +818,16 @@ async def _generate_web_grounded_insight(
     ):
         return None
     try:
+        search_started = asyncio.get_running_loop().time()
         results = await services.web_search.search(query)
+        search_elapsed_ms = (
+            asyncio.get_running_loop().time() - search_started
+        ) * 1_000
         detection.web_grounded = True
         detection.should_trigger = True
         if detection.intent == "none":
             detection.intent = "question"
+        synthesis_started = asyncio.get_running_loop().time()
         insight = await services.insights.generate_web_grounded(
             session_id,
             query,
@@ -799,12 +835,18 @@ async def _generate_web_grounded_insight(
             results,
             language,
         )
+        synthesis_elapsed_ms = (
+            asyncio.get_running_loop().time() - synthesis_started
+        ) * 1_000
         logger.info(
-            "Web insight grounded session=%s intent=%s confidence=%.2f results=%d",
+            "Web insight grounded session=%s intent=%s confidence=%.2f results=%d "
+            "search_elapsed_ms=%.0f synthesis_elapsed_ms=%.0f",
             session_id,
             detection.intent,
             detection.confidence,
             len(results),
+            search_elapsed_ms,
+            synthesis_elapsed_ms,
         )
         return insight
     except (WebSearchError, OllamaError, ValueError) as exc:
