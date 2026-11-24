@@ -13,6 +13,7 @@ It is designed for a Raspberry Pi 5 and ARM64 Docker, but also runs on Docker De
 - a topic-observer lane for multi-turn technical context and troubleshooting suggestions
 - deterministic freshness, cooldown, and duplicate controls
 - durable transcripts, memories, insights, and feedback
+- read-only, automatically refreshed retrieval from curated Markdown knowledge
 - text-file conversation simulator
 - Docker Compose deployment and automated tests
 
@@ -55,6 +56,7 @@ HomeBuddy / glasses microphone
          │ accepted
          ▼
        MemoryEngine ──────────► client + global memories
+       MarkdownKnowledge ─────► relevant chunks from /knowledge/**/*.md
          │
          ▼
  Model 2: Insight generator (Ollama Cloud)
@@ -133,6 +135,8 @@ AUTH_STATIC_TOKEN=
 AUTH_TOKEN_TTL_SECONDS=86400
 DETECTOR_MODE=conversate
 LOG_LEVEL=INFO
+KNOWLEDGE_ENABLED=true
+KNOWLEDGE_HOST_PATH=/srv/homebuddy-share/Knowledge
 ```
 
 Use the Ollama host's LAN IP even when Ollama and Docker run on the same Raspberry Pi. Ollama must accept connections from the Docker bridge network.
@@ -144,6 +148,47 @@ openssl rand -hex 32
 ```
 
 Put the generated value in `AUTH_PASSWORD` without quotes.
+
+## Curated Markdown knowledge
+
+The service can retrieve relevant passages from Markdown files without loading the whole knowledge
+folder into every model request. Docker mounts the host folder read-only, splits `**/*.md` files into
+bounded chunks, and injects only the best lexical matches into trigger, question, topic, and insight
+prompts. Files are never edited by ProactiveAI.
+
+The Raspberry Pi deployment defaults to:
+
+```text
+/srv/homebuddy-share/Knowledge  ->  /knowledge (read-only in the container)
+```
+
+Set these values in `.env` when a different host path or retrieval budget is needed:
+
+```dotenv
+KNOWLEDGE_ENABLED=true
+KNOWLEDGE_HOST_PATH=/srv/homebuddy-share/Knowledge
+KNOWLEDGE_RESULT_LIMIT=4
+KNOWLEDGE_CHUNK_CHARACTERS=1400
+KNOWLEDGE_MAX_CONTEXT_CHARACTERS=5000
+KNOWLEDGE_MAX_FILE_BYTES=1000000
+KNOWLEDGE_REFRESH_SECONDS=30
+```
+
+The index notices Markdown changes automatically after the refresh interval. An authenticated client
+can inspect or immediately refresh it:
+
+```bash
+curl -H "Authorization: Bearer ${AUTH_STATIC_TOKEN}" \
+  http://127.0.0.1:18743/v1/knowledge/status
+
+curl -X POST -H "Authorization: Bearer ${AUTH_STATIC_TOKEN}" \
+  http://127.0.0.1:18743/v1/knowledge/refresh
+```
+
+Knowledge files are treated as reference data, not executable instructions. Keep each document
+focused, use descriptive headings and filenames, and place the exact terminology that may occur in
+conversation in the document text. Session summaries remain grounded in the recorded conversation;
+the knowledge layer is used for proactive detection and insight generation.
 
 ## Raspberry Pi deployment notes
 

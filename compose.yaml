@@ -58,11 +58,24 @@ services:
       INSIGHT_MAX_CHARACTERS: ${INSIGHT_MAX_CHARACTERS:-340}
       SESSION_ANALYSIS_MAX_CHARACTERS: ${SESSION_ANALYSIS_MAX_CHARACTERS:-60000}
       SESSION_ANALYSIS_TTL_SECONDS: ${SESSION_ANALYSIS_TTL_SECONDS:-259200}
+      KNOWLEDGE_ENABLED: ${KNOWLEDGE_ENABLED:-true}
+      KNOWLEDGE_PATH: /knowledge
+      KNOWLEDGE_RESULT_LIMIT: ${KNOWLEDGE_RESULT_LIMIT:-4}
+      KNOWLEDGE_CHUNK_CHARACTERS: ${KNOWLEDGE_CHUNK_CHARACTERS:-1400}
+      KNOWLEDGE_MAX_CONTEXT_CHARACTERS: ${KNOWLEDGE_MAX_CONTEXT_CHARACTERS:-5000}
+      KNOWLEDGE_MAX_FILE_BYTES: ${KNOWLEDGE_MAX_FILE_BYTES:-1000000}
+      KNOWLEDGE_REFRESH_SECONDS: ${KNOWLEDGE_REFRESH_SECONDS:-30}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       DATABASE_PATH: /data/homebuddy.db
     volumes:
       - homebuddy-data:/data
       - ./config/conversate-rules.md:/config/conversate-rules.md:ro
+      - type: bind
+        source: ${KNOWLEDGE_HOST_PATH:-/srv/homebuddy-share/Knowledge}
+        target: /knowledge
+        read_only: true
+        bind:
+          create_host_path: false
     security_opt:
       - no-new-privileges:true
     cap_drop:

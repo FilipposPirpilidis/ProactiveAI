@@ -15,6 +15,7 @@ from app.config import Settings, get_settings
 from app.detector import ProactiveDetector
 from app.freshness import InsightFreshnessValidator
 from app.insights import InsightEngine, captured_insight_text, sanitize_insight_text
+from app.knowledge import MarkdownKnowledgeBase
 from app.memory import MemoryEngine
 from app.models import (
     Detection,
@@ -64,6 +65,15 @@ class ServiceContainer:
             settings.database_path,
             settings.memory_result_limit,
             settings.session_analysis_ttl_seconds,
+        )
+        self.knowledge = MarkdownKnowledgeBase(
+            settings.knowledge_path,
+            enabled=settings.knowledge_enabled,
+            result_limit=settings.knowledge_result_limit,
+            chunk_characters=settings.knowledge_chunk_characters,
+            max_context_characters=settings.knowledge_max_context_characters,
+            max_file_bytes=settings.knowledge_max_file_bytes,
+            refresh_seconds=settings.knowledge_refresh_seconds,
         )
         self.auth = AuthService(
             self.memory,
@@ -155,6 +165,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     services = ServiceContainer(settings)
     await services.memory.initialize()
+    await services.knowledge.initialize()
+    logger.info("Markdown knowledge status=%s", services.knowledge.status())
     services.start_analysis_cleanup()
     app.state.services = services
     yield
@@ -288,6 +300,9 @@ class PartialInsightWorker:
             ):
                 return
             memories = await self.services.memory.relevant(self.client_id, conversation)
+            knowledge_context = self.services.knowledge.format_context(
+                await self.services.knowledge.search(conversation)
+            )
             memory_context = "\n".join(f"- {item.content}" for item in memories)
             people_context = await self.services.memory.people_context(self.session_id)
             if people_context:
@@ -308,6 +323,7 @@ class PartialInsightWorker:
                 record_trigger=False,
                 cooldown_seconds=self.services.settings.partial_insight_cooldown_seconds,
                 verify_followup_answers=False,
+                knowledge_context=knowledge_context,
             )
             logger.info(
                 "Partial evaluated session=%s event=%s revision=%d triggered=%s "
@@ -367,6 +383,7 @@ class PartialInsightWorker:
                     memories,
                     latest_segment,
                     transcript.language,
+                    knowledge_context=knowledge_context,
                 )
 
             insight.text = sanitize_insight_text(
@@ -604,6 +621,9 @@ class TopicInsightWorker:
             shown_insights=shown,
             explained_angles=self.services.detector.explained_subject_angles(
                 self.session_id
+            ),
+            knowledge_context=self.services.knowledge.format_context(
+                await self.services.knowledge.search(conversation)
             ),
         )
         logger.info(
@@ -971,6 +991,9 @@ class QuestionInsightWorker:
             language=snapshot[-1].language,
             policy=self.services.settings.question_insight_policy,
             handled_questions=tuple(original for _, original in self._handled),
+            knowledge_context=self.services.knowledge.format_context(
+                await self.services.knowledge.search("\n".join(turns))
+            ),
         )
         logger.info(
             "Question evaluated session=%s triggered=%s status=%s intent=%s "
@@ -1045,6 +1068,9 @@ class QuestionInsightWorker:
             self.client_id,
             conversation,
         )
+        knowledge_context = self.services.knowledge.format_context(
+            await self.services.knowledge.search(conversation)
+        )
         try:
             if web_candidate:
                 insight = await _generate_web_grounded_insight(
@@ -1071,6 +1097,7 @@ class QuestionInsightWorker:
                     memories,
                     detection.question_text,
                     snapshot[-1].language,
+                    knowledge_context=knowledge_context,
                 )
         except OllamaError as exc:
             logger.warning(
@@ -1196,6 +1223,19 @@ async def ready() -> dict[str, str]:
         "trigger_model": services.settings.resolved_trigger_model,
         "insight_model": services.settings.resolved_insight_model,
     }
+
+
+@app.get("/v1/knowledge/status", dependencies=[Depends(require_http_token)])
+async def knowledge_status() -> dict[str, object]:
+    services: ServiceContainer = app.state.services
+    return services.knowledge.status()
+
+
+@app.post("/v1/knowledge/refresh", dependencies=[Depends(require_http_token)])
+async def refresh_knowledge() -> dict[str, object]:
+    services: ServiceContainer = app.state.services
+    await services.knowledge.refresh(force=True)
+    return services.knowledge.status()
 
 
 @app.post("/v1/auth/signin")
@@ -1665,6 +1705,9 @@ async def _process_final_transcript(
 
     evaluation_started = asyncio.get_running_loop().time()
     memories = await services.memory.relevant(client_id, conversation)
+    knowledge_context = services.knowledge.format_context(
+        await services.knowledge.search(conversation)
+    )
     memory_context = "\n".join(f"- {item.content}" for item in memories)
     people_context = await services.memory.people_context(session_id)
     if people_context:
@@ -1684,6 +1727,7 @@ async def _process_final_transcript(
         transcript.language,
         record_trigger=False,
         allow_current_information=services.web_search.available,
+        knowledge_context=knowledge_context,
     )
     # Only finalized transcript evidence becomes durable session people memory.
     # Partial observations can still produce a timely card, but remain provisional.
@@ -1741,6 +1785,7 @@ async def _process_final_transcript(
                 memories,
                 transcript.text,
                 transcript.language,
+                knowledge_context=knowledge_context,
             )
         except OllamaError:
             await _send_ack(websocket, send_lock, transcript.event_id, True, detection.reason)

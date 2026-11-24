@@ -75,6 +75,15 @@ class Settings(BaseSettings):
     insight_target_characters: int = Field(default=260, ge=40, le=500)
     insight_max_characters: int = Field(default=340, ge=80, le=1_000)
     memory_result_limit: int = 5
+    knowledge_enabled: bool = True
+    knowledge_path: str = "/knowledge"
+    knowledge_result_limit: int = Field(default=4, ge=1, le=12)
+    knowledge_chunk_characters: int = Field(default=1_400, ge=300, le=8_000)
+    knowledge_max_context_characters: int = Field(default=5_000, ge=500, le=30_000)
+    knowledge_max_file_bytes: int = Field(
+        default=1_000_000, ge=1_024, le=20_000_000
+    )
+    knowledge_refresh_seconds: float = Field(default=30.0, ge=1, le=3_600)
     session_analysis_max_characters: int = Field(
         default=60_000, ge=5_000, le=1_000_000
     )
